@@ -9,6 +9,7 @@ import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
 import org.fractalx.core.gateway.SecurityProfile.AuthType;
 import org.fractalx.core.gateway.SecurityProfile.RouteSecurityRule;
+import org.fractalx.core.graph.DependencyGraph;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
@@ -60,6 +61,9 @@ public class SecurityAnalyzer {
 
     private final JavaParser javaParser = new JavaParser();
 
+    /** Optional graph for structural queries — set via {@link #analyze(Path, Path, DependencyGraph)}. */
+    private DependencyGraph graph;
+
     /**
      * Analyzes the monolith project and returns a {@link SecurityProfile}.
      *
@@ -68,6 +72,19 @@ public class SecurityAnalyzer {
      * @param resourcesRoot  the monolith's {@code src/main/resources} directory
      */
     public SecurityProfile analyze(Path sourceRoot, Path resourcesRoot) {
+        return analyze(sourceRoot, resourcesRoot, null);
+    }
+
+    /**
+     * Graph-aware overload — uses the {@link DependencyGraph} for structural queries
+     * (extends, implements, annotations) instead of re-walking the AST for class-level checks.
+     */
+    public SecurityProfile analyze(Path sourceRoot, Path resourcesRoot, DependencyGraph dependencyGraph) {
+        this.graph = dependencyGraph;
+        return doAnalyze(sourceRoot, resourcesRoot);
+    }
+
+    private SecurityProfile doAnalyze(Path sourceRoot, Path resourcesRoot) {
         log.info("[SecurityAnalyzer] Scanning monolith security configuration...");
 
         // Resolve the java source directory — handle both project-root and src/main/java inputs
@@ -196,26 +213,32 @@ public class SecurityAnalyzer {
         Set<AuthType> detected = new LinkedHashSet<>();
 
         // OAuth2 (highest priority)
-        if (yaml.jwkSetUri != null || yaml.issuerUri != null || anyCallMatches(cus, "oauth2ResourceServer")) {
+        if (yaml.jwkSetUri != null || yaml.issuerUri != null || hasMethodCall("oauth2ResourceServer", cus)) {
             detected.add(AuthType.OAUTH2);
         }
 
         // Basic Auth
-        if (yaml.basicUsername != null || anyCallMatches(cus, "httpBasic")) {
+        if (yaml.basicUsername != null || hasMethodCall("httpBasic", cus)) {
             detected.add(AuthType.BASIC);
         }
 
         // Bearer JWT (custom OncePerRequestFilter with "Bearer " literal)
-        boolean hasBearerFilter = cus.stream().anyMatch(this::isBearerJwtFilter);
-        if (hasBearerFilter) {
+        if (hasBearerJwtFilter(cus)) {
             detected.add(AuthType.BEARER_JWT);
         }
 
         // @EnableWebSecurity present but no specific type detected — assume Bearer JWT
         if (detected.isEmpty()) {
-            boolean hasWebSecurity = cus.stream().anyMatch(cu ->
-                    cu.findAll(ClassOrInterfaceDeclaration.class).stream()
-                            .anyMatch(c -> c.getAnnotationByName("EnableWebSecurity").isPresent()));
+            boolean hasWebSecurity;
+            if (graph != null) {
+                // Graph-based: structural annotation query
+                hasWebSecurity = !graph.nodesWithAnnotation("EnableWebSecurity").isEmpty();
+            } else {
+                // AST fallback
+                hasWebSecurity = cus.stream().anyMatch(cu ->
+                        cu.findAll(ClassOrInterfaceDeclaration.class).stream()
+                                .anyMatch(c -> c.getAnnotationByName("EnableWebSecurity").isPresent()));
+            }
             if (hasWebSecurity) {
                 log.info("[SecurityAnalyzer] @EnableWebSecurity detected but auth type unclear — assuming BEARER_JWT");
                 detected.add(AuthType.BEARER_JWT);
@@ -225,21 +248,43 @@ public class SecurityAnalyzer {
         return detected;
     }
 
-    private boolean anyCallMatches(List<CompilationUnit> cus, String methodName) {
+    /** Checks whether any method body contains a call to the given method name. */
+    private boolean hasMethodCall(String methodName, List<CompilationUnit> cus) {
+        if (graph != null) {
+            return !graph.nodesWithMethodCall(methodName).isEmpty();
+        }
+        // AST fallback
         return cus.stream().anyMatch(cu ->
                 cu.findAll(MethodCallExpr.class).stream()
                         .anyMatch(m -> m.getNameAsString().equals(methodName)));
     }
 
-    private boolean isBearerJwtFilter(CompilationUnit cu) {
-        return cu.findAll(ClassOrInterfaceDeclaration.class).stream().anyMatch(cls -> {
-            boolean extendsOncePerRequestFilter = cls.getExtendedTypes().stream()
-                    .anyMatch(t -> t.getNameAsString().equals("OncePerRequestFilter"));
-            boolean hasBearerLiteral = cu.findAll(StringLiteralExpr.class).stream()
-                    .anyMatch(s -> s.asString().toLowerCase().contains("bearer ")
-                               || s.asString().equalsIgnoreCase("authorization"));
-            return extendsOncePerRequestFilter && hasBearerLiteral;
-        });
+    /**
+     * Detects a Bearer JWT filter pattern: a class that extends OncePerRequestFilter
+     * and contains "Bearer " or "Authorization" string literals in its methods.
+     * Uses graph method-level data (Phase 2) when available.
+     */
+    private boolean hasBearerJwtFilter(List<CompilationUnit> cus) {
+        if (graph != null) {
+            // Fully graph-based: superclass check + string literal check
+            return graph.nodesMatching(n ->
+                    "OncePerRequestFilter".equals(n.superclass())
+                    && n.methods().stream().anyMatch(m ->
+                            m.stringLiterals().stream().anyMatch(s ->
+                                    s.toLowerCase().contains("bearer ")
+                                    || s.equalsIgnoreCase("authorization")))
+            ).stream().findAny().isPresent();
+        }
+        // AST fallback
+        return cus.stream().anyMatch(cu ->
+                cu.findAll(ClassOrInterfaceDeclaration.class).stream().anyMatch(cls -> {
+                    boolean extendsFilter = cls.getExtendedTypes().stream()
+                            .anyMatch(t -> t.getNameAsString().equals("OncePerRequestFilter"));
+                    if (!extendsFilter) return false;
+                    return cu.findAll(StringLiteralExpr.class).stream()
+                            .anyMatch(s -> s.asString().toLowerCase().contains("bearer ")
+                                       || s.asString().equalsIgnoreCase("authorization"));
+                }));
     }
 
     // ── requestMatchers rule extraction ───────────────────────────────────────
@@ -335,8 +380,19 @@ public class SecurityAnalyzer {
 
         for (CompilationUnit cu : cus) {
             cu.findAll(ClassOrInterfaceDeclaration.class).forEach(cls -> {
-                boolean isController = cls.getAnnotationByName("RestController").isPresent()
-                        || cls.getAnnotationByName("Controller").isPresent();
+                boolean isController;
+                if (graph != null) {
+                    // Graph-based: structural annotation query
+                    String fqcn = cu.getPackageDeclaration()
+                            .map(pd -> pd.getNameAsString() + "." + cls.getNameAsString())
+                            .orElse(cls.getNameAsString());
+                    var node = graph.node(fqcn);
+                    isController = node.isPresent() && (node.get().annotations().contains("RestController")
+                            || node.get().annotations().contains("Controller"));
+                } else {
+                    isController = cls.getAnnotationByName("RestController").isPresent()
+                            || cls.getAnnotationByName("Controller").isPresent();
+                }
                 if (!isController) return;
 
                 String basePath = extractMappingPath(cls);

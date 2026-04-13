@@ -1323,7 +1323,13 @@ public class SmokeTestMojo extends FractalxBaseMojo {
 
     /** Single endpoint probe result. */
     private record EndpointProbe(String method, String path, String probedPath, int httpStatus) {
-        boolean passed() { return httpStatus > 0 && httpStatus < 500; }
+        boolean passed() {
+            if (httpStatus <= 0) return false;
+            // Fallback endpoints are circuit-breaker stubs that intentionally return 503 —
+            // treat as passed since they are behaving correctly.
+            if (path.startsWith("/fallback/") && httpStatus == 503) return true;
+            return httpStatus < 500;
+        }
     }
 
     /** Integration phase result (Phase 2). */

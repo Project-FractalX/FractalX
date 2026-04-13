@@ -109,8 +109,17 @@ class ReflectiveModuleAnalyzerSpec extends Specification {
 
     def "infers dependencies from sibling Service fields when module class is a bare marker"() {
         given: "Module class has no fields — deps live in sibling @Service class"
+        // Compile a stub @Service annotation so reflection can check it
+        compile("org/springframework/stereotype/Service.java", """
+            package org.springframework.stereotype;
+            import java.lang.annotation.*;
+            @Target(ElementType.TYPE)
+            @Retention(RetentionPolicy.RUNTIME)
+            public @interface Service {}
+        """)
         compile("com/example/shared/CustomerService.java", """
             package com.example.shared;
+            @org.springframework.stereotype.Service
             public class CustomerService {}
         """)
         compile("com/example/notification/NotificationService.java", """

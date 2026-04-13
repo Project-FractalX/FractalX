@@ -26,19 +26,28 @@ public class GatewayCircuitBreakerGenerator {
     private void generateFallbackController(Path pkg, List<FractalModule> modules) throws IOException {
         StringBuilder methods = new StringBuilder();
         for (FractalModule m : modules) {
-            methods.append("""
-
-                        @RequestMapping(method = {RequestMethod.GET, RequestMethod.POST}, value = "/fallback/%s")
-                        public ResponseEntity<Map<String, Object>> %sFallback() {
+            String camel = toCamelCase(m.getServiceName());
+            String serviceName = m.getServiceName();
+            String body = """
                             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                                     .body(Map.of(
                                             "error", "Service Unavailable",
                                             "service", "%s",
                                             "message", "The service is temporarily unavailable. Please retry shortly.",
                                             "timestamp", System.currentTimeMillis()
-                                    ));
+                                    ));""".formatted(serviceName);
+            methods.append("""
+
+                        @GetMapping("/%s")
+                        public ResponseEntity<Map<String, Object>> %sFallbackGet() {
+                    %s
                         }
-                    """.formatted(m.getServiceName(), toCamelCase(m.getServiceName()), m.getServiceName()));
+
+                        @PostMapping("/%s")
+                        public ResponseEntity<Map<String, Object>> %sFallbackPost() {
+                    %s
+                        }
+                    """.formatted(serviceName, camel, body, serviceName, camel, body));
         }
 
         String content = """
@@ -46,8 +55,9 @@ public class GatewayCircuitBreakerGenerator {
 
                 import org.springframework.http.HttpStatus;
                 import org.springframework.http.ResponseEntity;
+                import org.springframework.web.bind.annotation.GetMapping;
+                import org.springframework.web.bind.annotation.PostMapping;
                 import org.springframework.web.bind.annotation.RequestMapping;
-                import org.springframework.web.bind.annotation.RequestMethod;
                 import org.springframework.web.bind.annotation.RestController;
 
                 import java.util.Map;

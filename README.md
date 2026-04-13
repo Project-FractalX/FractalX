@@ -1,6 +1,6 @@
 # FractalX
 
-[![Maven Central](https://img.shields.io/badge/maven--central-0.4.0-blue)](https://central.sonatype.com/artifact/org.fractalx/fractalx-annotations)
+[![Maven Central](https://img.shields.io/maven-central/v/org.fractalx/fractalx-annotations)](https://central.sonatype.com/artifact/org.fractalx/fractalx-annotations)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 [![Java](https://img.shields.io/badge/java-21%2B-orange)](https://adoptium.net/)
 [![Spring Boot](https://img.shields.io/badge/spring--boot-3.2%2B%20%7C%204.x-brightgreen)](https://spring.io/projects/spring-boot)
@@ -39,7 +39,7 @@ Manual microservices migrations are slow, error-prone, and expensive — requiri
 6. [Pre-Decomposition Configuration](#6-pre-decomposition-configuration)
     - [Naming Conventions](#naming-conventions)
     - [Feature Flags](#feature-flags)
-7. [Maven Plugin Reference](#7-maven-plugin-reference)
+7. [Running FractalX](#7-running-fractalx)
 8. [Generated Output](#8-generated-output)
 9. [Start Generated Services](#9-start-generated-services)
 10. [Docker Deployment](#10-docker-deployment)
@@ -71,10 +71,14 @@ Manual microservices migrations are slow, error-prone, and expensive — requiri
 ### Step 1 -- Add the dependency
 
 ```xml
+<properties>
+    <fractalx.version>LATEST</fractalx.version><!-- replace with version from Maven Central badge above -->
+</properties>
+
 <dependency>
     <groupId>org.fractalx</groupId>
     <artifactId>fractalx-annotations</artifactId>
-    <version>0.4.0</version>
+    <version>${fractalx.version}</version>
 </dependency>
 ```
 
@@ -94,13 +98,13 @@ public class PaymentModule { }
 
 That is the only source change required. No other annotations are needed in your service classes.
 
-### Step 3 -- Add the plugin to your `pom.xml`
+### Step 3 -- Add the Maven plugin to your `pom.xml` (the invocation layer)
 
 ```xml
 <plugin>
     <groupId>org.fractalx</groupId>
     <artifactId>fractalx-maven-plugin</artifactId>
-    <version>0.4.0</version>
+    <version>${fractalx.version}</version>
 </plugin>
 ```
 
@@ -111,7 +115,7 @@ mvn fractalx:decompose
 ```
 
 ```
-[INFO] FractalX 0.4.0 -- starting decomposition
+[INFO] FractalX x.y.z -- starting decomposition
 [INFO] Phase 1: Parsing 22 source files ...
 [INFO] Phase 2: Detected 2 modules, 1 cross-module dependency
 [INFO] Generating order-service   (port 8081) ...
@@ -143,7 +147,7 @@ In under a minute you have:
 
 ## 2. How It Works
 
-FractalX is a **build-time static analyzer + code generator**. It reads your monolith's source tree with JavaParser, identifies bounded contexts from `@DecomposableModule` annotations, and generates everything needed to run those contexts as independent Spring Boot services.
+FractalX is a **multi-module framework** composed of a core decomposition engine, an annotations library, a runtime support library, a Spring Initializr integration, and a Maven plugin as the invocation layer. It reads your monolith's source tree with JavaParser, identifies bounded contexts from `@DecomposableModule` annotations, and generates everything needed to run those contexts as independent Spring Boot services.
 
 ### Two-phase AST analysis
 
@@ -595,9 +599,9 @@ Dependency names that cannot be resolved (after normalization) are logged as war
 
 ---
 
-## 7. Maven Plugin Reference
+## 7. Running FractalX
 
-Every goal renders the **FRACTALX** ASCII banner. The interactive menu is the recommended entry point.
+FractalX is invoked through its Maven plugin — the plugin is the command-line interface to the core framework engine. Every goal renders the **FRACTALX** ASCII banner. The interactive menu is the recommended entry point.
 
 ### Common flags
 
@@ -1511,7 +1515,7 @@ mvn fractalx:decompose fractalx:verify \
 ```
 
 Results are printed with `✓` / `✘` / `⚠` markers. `✘` findings are hard failures; `⚠` findings
-are advisory warnings. See [Maven Plugin Reference](#7-maven-plugin-reference) for level details.
+are advisory warnings. See [Running FractalX](#7-running-fractalx) for level details.
 
 ### Understanding `[FAIL]` vs `[WARN]`
 
@@ -1547,7 +1551,7 @@ Each detected occurrence includes the file name, method name, and specific fix r
 ### Why re-decompose is required after framework upgrades
 
 `mvn fractalx:verify` runs verifiers against whatever files are currently in the output directory.
-If that directory was produced by an older version of the plugin, it reflects the older generator's
+If that directory was produced by an older version of FractalX, it reflects the older generator's
 behaviour and will show stale failures. Always delete the output directory and re-run
 `mvn fractalx:decompose` after upgrading `<fractalx.version>`:
 
@@ -2695,16 +2699,20 @@ Here is a minimal but complete modular monolith that FractalX can fully decompos
 ### `pom.xml` (relevant excerpt)
 
 ```xml
+<properties>
+    <fractalx.version>LATEST</fractalx.version><!-- replace with version from Maven Central badge -->
+</properties>
+
 <dependencies>
     <dependency>
         <groupId>org.fractalx</groupId>
         <artifactId>fractalx-annotations</artifactId>
-        <version>0.4.0</version>
+        <version>${fractalx.version}</version>
     </dependency>
     <dependency>
         <groupId>org.fractalx</groupId>
         <artifactId>fractalx-runtime</artifactId>
-        <version>0.4.0</version>
+        <version>${fractalx.version}</version>
     </dependency>
     <!-- your normal Spring Boot deps -->
 </dependencies>
@@ -2714,7 +2722,7 @@ Here is a minimal but complete modular monolith that FractalX can fully decompos
         <plugin>
             <groupId>org.fractalx</groupId>
             <artifactId>fractalx-maven-plugin</artifactId>
-            <version>0.4.0</version>
+            <version>${fractalx.version}</version>
         </plugin>
     </plugins>
 </build>

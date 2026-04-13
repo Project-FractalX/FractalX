@@ -1,5 +1,9 @@
 package org.fractalx.core.datamanagement;
 
+import org.fractalx.core.graph.DependencyGraph;
+import org.fractalx.core.graph.EdgeKind;
+import org.fractalx.core.graph.GraphEdge;
+import org.fractalx.core.graph.GraphNode;
 import org.fractalx.core.model.FractalModule;
 import org.fractalx.core.util.SpringDataUtils;
 import com.github.javaparser.JavaParser;
@@ -50,9 +54,31 @@ public class RelationshipDecoupler {
     private static final String ONE_TO_MANY  = "OneToMany";
     private static final String MANY_TO_MANY = "ManyToMany";
 
+    /** JPA class-level annotations — classes with these are entities, not request DTOs. */
+    private static final Set<String> JPA_CLASS_ANNOS = Set.of(
+            "Entity", "Table", "MappedSuperclass", "Embeddable");
+
+    /** Spring stereotype annotations — classes with these are components, not request DTOs. */
+    private static final Set<String> SPRING_STEREOTYPE_ANNOS = Set.of(
+            "Service", "Component", "Repository", "Controller", "RestController",
+            "Configuration", "SpringBootApplication");
+
+    /** Graph reference, set per-transform call. Nullable — falls back to AST when absent. */
+    private DependencyGraph graph;
+
     // =========================================================================
     // Public entry point
     // =========================================================================
+
+    /**
+     * Graph-aware overload. Delegates to the main transform logic after storing
+     * the graph reference for structural queries.
+     */
+    public void transform(Path serviceRoot, FractalModule module, String basePackage,
+                           DependencyGraph graph) {
+        this.graph = graph;
+        transform(serviceRoot, module, basePackage);
+    }
 
     /**
      * Orchestrates the transformation process: identifies local/remote entities,
@@ -403,6 +429,19 @@ public class RelationshipDecoupler {
      * model classes from other modules may already be present from a previous generation run.
      */
     private Set<String> findLocalEntityNames(Path root, String modulePackage) throws IOException {
+        // Graph-first: query for @Entity nodes within the module package
+        if (graph != null) {
+            Set<String> local = graph.nodesWithAnnotation("Entity").stream()
+                    .filter(n -> modulePackage.isBlank() || n.packageName().startsWith(modulePackage))
+                    .map(GraphNode::simpleName)
+                    .collect(java.util.stream.Collectors.toSet());
+            if (!local.isEmpty()) {
+                log.debug("📊 [Data] Graph-based local entity detection: {}", local);
+                return local;
+            }
+        }
+
+        // AST fallback when graph is absent or yielded no results
         Set<String> local = new HashSet<>();
 
         try (Stream<Path> paths = Files.walk(root)) {
@@ -433,10 +472,41 @@ public class RelationshipDecoupler {
      * Identifies entity types used in relationships by module-owned entities that are
      * not themselves defined locally.  Now handles {@code @ManyToMany} in addition to
      * {@code @ManyToOne}, {@code @OneToOne}, and {@code @OneToMany}.
+     *
+     * <p>Graph-first: when a {@link DependencyGraph} is available, derives remote entities
+     * by following {@link EdgeKind#FIELD_REFERENCE} edges from local @Entity nodes to
+     * @Entity targets outside the module package. Falls back to AST scanning when the
+     * graph is absent.
      */
     private Set<String> findRemoteEntities(Path root,
                                             Set<String> localEntities,
                                             String modulePackage) throws IOException {
+        // Graph-first: follow FIELD_REFERENCE edges from local entities to entity targets
+        if (graph != null) {
+            Set<String> localFqcns = graph.nodesWithAnnotation("Entity").stream()
+                    .filter(n -> modulePackage.isBlank() || n.packageName().startsWith(modulePackage))
+                    .map(GraphNode::fqcn)
+                    .collect(java.util.stream.Collectors.toSet());
+
+            Set<String> remote = new HashSet<>();
+            for (String fqcn : localFqcns) {
+                for (GraphEdge edge : graph.edgesFrom(fqcn)) {
+                    if (edge.kind() != EdgeKind.FIELD_REFERENCE) continue;
+                    graph.node(edge.targetNode()).ifPresent(target -> {
+                        if (target.annotations().contains("Entity")
+                                && !localFqcns.contains(target.fqcn())) {
+                            remote.add(target.simpleName());
+                        }
+                    });
+                }
+            }
+            if (!remote.isEmpty()) {
+                log.debug("📊 [Data] Graph-based remote entity detection: {}", remote);
+                return remote;
+            }
+        }
+
+        // AST fallback
         Set<String> referenced = new HashSet<>();
 
         try (Stream<Path> paths = Files.walk(root)) {
@@ -519,11 +589,14 @@ public class RelationshipDecoupler {
                                 idx.requestInfo.put(name, info);
                             }
 
-                            // POJO classes
+                            // POJO classes — structural: a data-holder has no JPA entity or
+                            // Spring stereotype annotations. This replaces the name-based
+                            // endsWith("Request") heuristic; any non-entity, non-component
+                            // class can serve as a request DTO regardless of what it is named.
                             for (ClassOrInterfaceDeclaration cd : cu.findAll(ClassOrInterfaceDeclaration.class)) {
                                 if (cd.isInterface()) continue;
-                                if (!cd.getNameAsString().endsWith("Request")) continue;
-                                if (cd.getNameAsString().equals("Request")) continue;
+                                if (hasAnyAnnotation(cd, JPA_CLASS_ANNOS)) continue;
+                                if (hasAnyAnnotation(cd, SPRING_STEREOTYPE_ANNOS)) continue;
 
                                 String name = cd.getNameAsString();
                                 RequestInfo info = new RequestInfo(false);
@@ -773,98 +846,72 @@ public class RelationshipDecoupler {
                                           Set<String> collectionIdFields) {
         boolean modified = false;
 
-        // Lombok @Data / @Getter / @Setter: if the entity has no explicit get/set methods
-        // but uses Lombok, we still need to handle accessor renaming. Since Lombok generates
-        // accessors from field names, renaming the fields (done elsewhere) suffices. However,
-        // we also handle Java Records by checking for record-style accessors (fieldName()).
-        boolean isLombok = hasAnnotation(entityClass, "Data")
-                        || hasAnnotation(entityClass, "Getter")
-                        || hasAnnotation(entityClass, "Setter");
+        // Field-first: for each field being renamed, directly look up its accessor by the
+        // conventional name rather than scanning all methods for name-prefix patterns.
+        // This is structural — driven by what fields exist in the rename map, not by
+        // guessing method roles from their names.
+        for (Map.Entry<String, String> entry : renameMap.entrySet()) {
+            String oldField = entry.getKey();
+            String newField = entry.getValue();
+            boolean isList  = collectionIdFields.contains(oldField);
+            Type newType    = isList ? listOfString() : new ClassOrInterfaceType(null, "String");
 
-        for (MethodDeclaration m : entityClass.getMethods()) {
-
-            // --- Record-style accessor (e.g. customerId() instead of getCustomerId()) ---
-            if (m.getParameters().isEmpty() && !m.getNameAsString().startsWith("get")
-                    && !m.getNameAsString().startsWith("set") && !m.getNameAsString().startsWith("is")) {
-                String methodName = m.getNameAsString();
-                if (renameMap.containsKey(methodName)) {
-                    String newField = renameMap.get(methodName);
-                    boolean isList  = collectionIdFields.contains(methodName);
-                    m.setType(isList ? listOfString() : new ClassOrInterfaceType(null, "String"));
-                    m.setName(newField);
-                    m.findAll(ReturnStmt.class).forEach(r ->
-                            r.getExpression().ifPresent(expr -> {
-                                if (expr.isNameExpr()
-                                        && expr.asNameExpr().getNameAsString().equals(methodName)) {
-                                    r.setExpression(new NameExpr(newField));
-                                }
-                            }));
-                    modified = true;
-                }
+            // Record-style accessor: method named exactly as the field (0 params)
+            for (MethodDeclaration m : entityClass.getMethodsByName(oldField)) {
+                if (!m.getParameters().isEmpty()) continue;
+                m.setType(newType);
+                m.setName(newField);
+                m.findAll(ReturnStmt.class).forEach(r ->
+                        r.getExpression().ifPresent(expr -> {
+                            if (expr.isNameExpr()
+                                    && expr.asNameExpr().getNameAsString().equals(oldField)) {
+                                r.setExpression(new NameExpr(newField));
+                            }
+                        }));
+                modified = true;
             }
 
-            // --- Getter ---
-            if (m.getParameters().isEmpty() && m.getNameAsString().startsWith("get")) {
-                String suffix = m.getNameAsString().substring(3);
-                if (suffix.isEmpty()) continue;
-
-                String guessedField = lowerFirst(suffix);
-                if (renameMap.containsKey(guessedField)) {
-                    String newField    = renameMap.get(guessedField);
-                    boolean isList     = collectionIdFields.contains(guessedField);
-
-                    m.setType(isList ? listOfString() : new ClassOrInterfaceType(null, "String"));
-                    m.setName("get" + upperFirst(newField));
-
-                    m.findAll(ReturnStmt.class).forEach(r ->
-                            r.getExpression().ifPresent(expr -> {
-                                if (expr.isNameExpr()
-                                        && expr.asNameExpr().getNameAsString().equals(guessedField)) {
-                                    r.setExpression(new NameExpr(newField));
-                                }
-                                if (expr.isFieldAccessExpr()
-                                        && expr.asFieldAccessExpr().getNameAsString().equals(guessedField)) {
-                                    expr.asFieldAccessExpr().setName(newField);
-                                }
-                            }));
-
-                    modified = true;
-                }
+            // Bean getter: getXxx() with 0 params
+            for (MethodDeclaration m : entityClass.getMethodsByName("get" + upperFirst(oldField))) {
+                if (!m.getParameters().isEmpty()) continue;
+                m.setType(newType);
+                m.setName("get" + upperFirst(newField));
+                m.findAll(ReturnStmt.class).forEach(r ->
+                        r.getExpression().ifPresent(expr -> {
+                            if (expr.isNameExpr()
+                                    && expr.asNameExpr().getNameAsString().equals(oldField)) {
+                                r.setExpression(new NameExpr(newField));
+                            }
+                            if (expr.isFieldAccessExpr()
+                                    && expr.asFieldAccessExpr().getNameAsString().equals(oldField)) {
+                                expr.asFieldAccessExpr().setName(newField);
+                            }
+                        }));
+                modified = true;
             }
 
-            // --- Setter ---
-            if (m.getNameAsString().startsWith("set") && m.getParameters().size() == 1) {
-                String suffix = m.getNameAsString().substring(3);
-                if (suffix.isEmpty()) continue;
-
-                String guessedField = lowerFirst(suffix);
-                if (renameMap.containsKey(guessedField)) {
-                    String newField = renameMap.get(guessedField);
-                    boolean isList  = collectionIdFields.contains(guessedField);
-
-                    m.setName("set" + upperFirst(newField));
-                    m.getParameter(0).setType(isList ? listOfString() : new ClassOrInterfaceType(null, "String"));
-                    m.getParameter(0).setName(newField);
-
-                    m.findAll(AssignExpr.class).forEach(a -> {
-                        Expression target = a.getTarget();
-                        if (target.isFieldAccessExpr()) {
-                            FieldAccessExpr fa = target.asFieldAccessExpr();
-                            if (fa.getNameAsString().equals(guessedField)) fa.setName(newField);
-                        } else if (target.isNameExpr()
-                                && target.asNameExpr().getNameAsString().equals(guessedField)) {
-                            a.setTarget(new NameExpr(newField));
-                        }
-
-                        Expression value = a.getValue();
-                        if (value.isNameExpr()
-                                && value.asNameExpr().getNameAsString().equals(guessedField)) {
-                            a.setValue(new NameExpr(newField));
-                        }
-                    });
-
-                    modified = true;
-                }
+            // Bean setter: setXxx(T) with 1 param
+            for (MethodDeclaration m : entityClass.getMethodsByName("set" + upperFirst(oldField))) {
+                if (m.getParameters().size() != 1) continue;
+                m.setName("set" + upperFirst(newField));
+                m.getParameter(0).setType(newType);
+                m.getParameter(0).setName(newField);
+                m.findAll(AssignExpr.class).forEach(a -> {
+                    Expression target = a.getTarget();
+                    if (target.isFieldAccessExpr()) {
+                        FieldAccessExpr fa = target.asFieldAccessExpr();
+                        if (fa.getNameAsString().equals(oldField)) fa.setName(newField);
+                    } else if (target.isNameExpr()
+                            && target.asNameExpr().getNameAsString().equals(oldField)) {
+                        a.setTarget(new NameExpr(newField));
+                    }
+                    Expression value = a.getValue();
+                    if (value.isNameExpr()
+                            && value.asNameExpr().getNameAsString().equals(oldField)) {
+                        a.setValue(new NameExpr(newField));
+                    }
+                });
+                modified = true;
             }
         }
 
@@ -1568,10 +1615,35 @@ public class RelationshipDecoupler {
     /**
      * Converts a plural collection field name to its decoupled ID-list name.
      * <p>Examples: {@code "courses" → "courseIds"}, {@code "products" → "productIds"},
-     * {@code "aliases" → "aliasIds"} (ends in 'ses' → strip 's', add 'Ids').
+     * {@code "categories" → "categoryIds"} (-ies → -y), {@code "aliases" → "aliasIds"} (-ses → -s).
+     *
+     * <p>Uses standard English plural morphology rules — longer suffixes are matched
+     * first so that sibilant plurals ({@code ses}, {@code xes}, {@code ches}) are
+     * singularized before the plain-{@code s} rule applies.
      */
     private String toIdsFieldName(String fieldName) {
-        if (fieldName.endsWith("s") && !fieldName.endsWith("ss") && fieldName.length() > 1) {
+        String lower = fieldName.toLowerCase();
+        // Sibilant -es after x, z, ch, sh
+        if (lower.endsWith("xes") || lower.endsWith("zes")
+                || lower.endsWith("ches") || lower.endsWith("shes")) {
+            return fieldName.substring(0, fieldName.length() - 2) + "Ids";
+        }
+        // Double-s sibilant: classes → class
+        if (lower.endsWith("sses")) {
+            return fieldName.substring(0, fieldName.length() - 2) + "Ids";
+        }
+        // -ses only when the char just before "ses" is a vowel (buses, aliases)
+        // but NOT when it's a consonant (courses, horses) which are regular plurals
+        if (lower.endsWith("ses") && lower.length() > 4
+                && "aeiou".indexOf(lower.charAt(lower.length() - 4)) >= 0) {
+            return fieldName.substring(0, fieldName.length() - 2) + "Ids";
+        }
+        // -ies → -y: categories → category
+        if (lower.endsWith("ies") && lower.length() > 3) {
+            return fieldName.substring(0, fieldName.length() - 3) + "yIds";
+        }
+        // Plain -s (not -ss): courses → course, products → product
+        if (lower.endsWith("s") && !lower.endsWith("ss") && lower.length() > 1) {
             return fieldName.substring(0, fieldName.length() - 1) + "Ids";
         }
         return fieldName + "Ids";

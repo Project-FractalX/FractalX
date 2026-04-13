@@ -61,6 +61,9 @@ public class ModuleAnalyzer {
                     }
                 });
 
+        // ── Phase 1b: build annotation index — all types with Spring stereotype annotations ──
+        Set<String> springBeanTypes = buildSpringBeanTypeIndex(parsedFiles);
+
         // ── Phase 2: find @DecomposableModule classes ─────────────────────────
         List<FractalModule> modules = new ArrayList<>();
         for (CompilationUnit cu : parsedFiles.values()) {
@@ -69,7 +72,8 @@ public class ModuleAnalyzer {
                     String pkgName = cu.getPackageDeclaration()
                             .map(pd -> pd.getNameAsString()).orElse("");
                     Set<String> imports = collectImportsForPackage(pkgName, parsedFiles);
-                    FractalModule module = extractModuleDescriptor(classDecl, annotation, cu, imports, sourceRoot);
+                    FractalModule module = extractModuleDescriptor(classDecl, annotation, cu, imports,
+                            sourceRoot, springBeanTypes);
                     modules.add(module);
                     log.info("Found decomposable module: {}  ({} imports detected)",
                             module.getServiceName(), module.getDetectedImports().size());
@@ -91,6 +95,32 @@ public class ModuleAnalyzer {
                 });
 
         return modules;
+    }
+
+    // ── Annotation index ──────────────────────────────────────────────────────
+
+    /** Spring stereotype annotations that identify Spring-managed bean types. */
+    private static final Set<String> SPRING_STEREOTYPES = Set.of(
+            "Service", "Component", "Repository", "Controller", "RestController", "Configuration");
+
+    /**
+     * Builds an index of all simple type names that carry a Spring stereotype annotation
+     * across the entire parsed source tree. Used to structurally identify cross-module
+     * dependencies without relying on naming conventions.
+     */
+    private Set<String> buildSpringBeanTypeIndex(Map<Path, CompilationUnit> parsedFiles) {
+        Set<String> beanTypes = new HashSet<>();
+        for (CompilationUnit cu : parsedFiles.values()) {
+            cu.findAll(ClassOrInterfaceDeclaration.class).forEach(cls -> {
+                boolean isBean = cls.getAnnotations().stream()
+                        .anyMatch(a -> SPRING_STEREOTYPES.contains(a.getNameAsString()));
+                if (isBean) {
+                    beanTypes.add(cls.getNameAsString());
+                }
+            });
+        }
+        log.debug("Spring bean type index: {}", beanTypes);
+        return beanTypes;
     }
 
     // ── Import collection ────────────────────────────────────────────────────
@@ -118,7 +148,8 @@ public class ModuleAnalyzer {
                                                    AnnotationExpr annotation,
                                                    CompilationUnit cu,
                                                    Set<String> detectedImports,
-                                                   Path sourceRoot) {
+                                                   Path sourceRoot,
+                                                   Set<String> springBeanTypes) {
         FractalModule.Builder builder = FractalModule.builder();
         builder.className(classDecl.getFullyQualifiedName().orElse(classDecl.getNameAsString()));
 
@@ -154,11 +185,11 @@ public class ModuleAnalyzer {
             dependencies = explicitDeps;
             log.info("Explicit dependencies declared for {}: {}", builder.build().getServiceName(), dependencies);
         } else {
-            dependencies = findDependencies(classDecl, packageName, sourceRoot);
+            dependencies = findDependencies(classDecl, packageName, sourceRoot, springBeanTypes);
             if (!dependencies.isEmpty()) {
-                log.warn("Module '{}': dependencies inferred by type-suffix heuristic ({}). " +
+                log.warn("Module '{}': dependencies inferred by annotation scan ({}). " +
                          "Declare them explicitly with @DecomposableModule(dependencies={{...}}) " +
-                         "for reliability with any naming convention.",
+                         "for full control.",
                          // serviceName not yet set on builder if we call build() — get from annotation
                          annotation.isNormalAnnotationExpr()
                              ? annotation.asNormalAnnotationExpr().getPairs().stream()
@@ -189,13 +220,13 @@ public class ModuleAnalyzer {
      * Finds cross-module dependencies by scanning <em>all</em> {@code .java} files in the
      * module's package directory tree (not just the {@code @DecomposableModule} class).
      *
-     * <p>Algorithm:
+     * <p>Algorithm (structural, annotation-based):
      * <ol>
      *   <li>Walk every {@code .java} file under {@code sourceRoot/<packagePath>}.</li>
      *   <li>Collect the simple names of every class/interface declared in those files
      *       (these are "local" types that live inside this module).</li>
-     *   <li>Collect every field type and constructor-parameter type that ends with
-     *       {@code "Service"} or {@code "Client"}.</li>
+     *   <li>Collect every field type and constructor-parameter type whose simple name
+     *       is a Spring-managed bean (has {@code @Service}, {@code @Component}, etc.).</li>
      *   <li>Subtract local types — what remains are genuine cross-module references.</li>
      * </ol>
      *
@@ -203,7 +234,8 @@ public class ModuleAnalyzer {
      * resolved (e.g. running from a single-file test fixture).
      */
     private List<String> findDependencies(ClassOrInterfaceDeclaration classDecl,
-                                           String packageName, Path sourceRoot) {
+                                           String packageName, Path sourceRoot,
+                                           Set<String> springBeanTypes) {
         Set<String> dependencies = new HashSet<>();
         Set<String> localTypes   = new HashSet<>();
 
@@ -221,10 +253,10 @@ public class ModuleAnalyzer {
                               cu.findAll(ClassOrInterfaceDeclaration.class)
                                 .forEach(c -> localTypes.add(c.getNameAsString()));
 
-                              // Collect *Service / *Client field types (all injection styles)
+                              // Collect field types that are Spring-managed beans (structural annotation check)
                               cu.findAll(FieldDeclaration.class).forEach(field -> {
                                   String t = field.getCommonType().asString();
-                                  if (t.endsWith("Service") || t.endsWith("Client")) {
+                                  if (springBeanTypes.contains(t)) {
                                       dependencies.add(t);
                                       log.debug("Found candidate dependency: {} in {}", t, javaFile.getFileName());
                                   }
@@ -252,11 +284,11 @@ public class ModuleAnalyzer {
                                       });
                               });
 
-                              // Collect *Service / *Client constructor-parameter types
+                              // Collect constructor-parameter types that are Spring-managed beans
                               cu.findAll(ConstructorDeclaration.class).forEach(ctor ->
                                   ctor.getParameters().forEach(param -> {
                                       String t = param.getTypeAsString();
-                                      if (t.endsWith("Service") || t.endsWith("Client")) {
+                                      if (springBeanTypes.contains(t)) {
                                           dependencies.add(t);
                                           log.debug("Found candidate dependency: {} in {} constructor", t, javaFile.getFileName());
                                       }
@@ -267,12 +299,12 @@ public class ModuleAnalyzer {
                       });
             } catch (IOException e) {
                 log.warn("Could not walk package directory {} — falling back to single-class scan", packageDir, e);
-                fallbackScan(classDecl, dependencies);
+                fallbackScan(classDecl, dependencies, springBeanTypes);
             }
         } else {
             // Package directory not found on disk (test fixture / non-standard layout) — fall back
             log.debug("Package directory not found: {} — using single-class fallback scan", packageDir);
-            fallbackScan(classDecl, dependencies);
+            fallbackScan(classDecl, dependencies, springBeanTypes);
         }
 
         // Remove types that are defined within this module — they are not cross-module
@@ -282,10 +314,11 @@ public class ModuleAnalyzer {
     }
 
     /** Original single-class scan used as a fallback when the package directory is unavailable. */
-    private void fallbackScan(ClassOrInterfaceDeclaration classDecl, Set<String> dependencies) {
+    private void fallbackScan(ClassOrInterfaceDeclaration classDecl, Set<String> dependencies,
+                               Set<String> springBeanTypes) {
         classDecl.findAll(FieldDeclaration.class).forEach(field -> {
             String t = field.getCommonType().asString();
-            if (t.endsWith("Service") || t.endsWith("Client")) {
+            if (springBeanTypes.contains(t)) {
                 dependencies.add(t);
                 log.debug("Fallback: found dependency {} in field declaration", t);
             }
@@ -299,7 +332,7 @@ public class ModuleAnalyzer {
                 .filter(f -> f.isFinal() && !f.isStatic())
                 .forEach(f -> {
                     String t = f.getCommonType().asString();
-                    if (!isWellKnownType(t)) {
+                    if (springBeanTypes.contains(t)) {
                         dependencies.add(t);
                         log.debug("Fallback Lombok ctor field dep: {}", t);
                     }
@@ -309,7 +342,7 @@ public class ModuleAnalyzer {
         classDecl.getConstructors().forEach(ctor ->
             ctor.getParameters().forEach(param -> {
                 String t = param.getType().asString();
-                if (t.endsWith("Service") || t.endsWith("Client")) {
+                if (springBeanTypes.contains(t)) {
                     dependencies.add(t);
                     log.debug("Fallback: found dependency {} in constructor parameter", t);
                 }
