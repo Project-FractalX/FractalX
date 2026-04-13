@@ -1,6 +1,7 @@
 package org.fractalx.core.datamanagement;
 
 import org.fractalx.core.model.FractalModule;
+import org.fractalx.core.util.SpringDataUtils;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
@@ -176,10 +177,9 @@ public class RelationshipDecoupler {
             if (!decl.isInterface()) continue;
 
             // Check if this interface extends a known Spring Data repository interface
-            boolean isRepository = decl.getExtendedTypes().stream()
-                    .map(t -> t.getNameAsString())
-                    .anyMatch(n -> n.contains("Repository") || n.contains("CrudRepository")
-                            || n.contains("JpaRepository") || n.contains("PagingAndSortingRepository"));
+            boolean isRepository = SpringDataUtils.isRepositoryInterface(decl)
+                    || decl.getAnnotations().stream()
+                           .anyMatch(a -> a.getNameAsString().equals("Repository"));
             if (!isRepository) continue;
 
             for (MethodDeclaration method : decl.getMethods()) {
@@ -773,7 +773,35 @@ public class RelationshipDecoupler {
                                           Set<String> collectionIdFields) {
         boolean modified = false;
 
+        // Lombok @Data / @Getter / @Setter: if the entity has no explicit get/set methods
+        // but uses Lombok, we still need to handle accessor renaming. Since Lombok generates
+        // accessors from field names, renaming the fields (done elsewhere) suffices. However,
+        // we also handle Java Records by checking for record-style accessors (fieldName()).
+        boolean isLombok = hasAnnotation(entityClass, "Data")
+                        || hasAnnotation(entityClass, "Getter")
+                        || hasAnnotation(entityClass, "Setter");
+
         for (MethodDeclaration m : entityClass.getMethods()) {
+
+            // --- Record-style accessor (e.g. customerId() instead of getCustomerId()) ---
+            if (m.getParameters().isEmpty() && !m.getNameAsString().startsWith("get")
+                    && !m.getNameAsString().startsWith("set") && !m.getNameAsString().startsWith("is")) {
+                String methodName = m.getNameAsString();
+                if (renameMap.containsKey(methodName)) {
+                    String newField = renameMap.get(methodName);
+                    boolean isList  = collectionIdFields.contains(methodName);
+                    m.setType(isList ? listOfString() : new ClassOrInterfaceType(null, "String"));
+                    m.setName(newField);
+                    m.findAll(ReturnStmt.class).forEach(r ->
+                            r.getExpression().ifPresent(expr -> {
+                                if (expr.isNameExpr()
+                                        && expr.asNameExpr().getNameAsString().equals(methodName)) {
+                                    r.setExpression(new NameExpr(newField));
+                                }
+                            }));
+                    modified = true;
+                }
+            }
 
             // --- Getter ---
             if (m.getParameters().isEmpty() && m.getNameAsString().startsWith("get")) {
@@ -1353,14 +1381,7 @@ public class RelationshipDecoupler {
                     // Check if the initializer is a repository/service lookup
                     if (vd.getInitializer().isPresent()) {
                         String init = vd.getInitializer().get().toString().toLowerCase();
-                        fetchedFromRepository = init.contains("findbyid") || init.contains("findby")
-                                || init.contains("getbyid") || init.contains("getby")
-                                || init.contains("getorderbyid") || init.contains("getcustomerbyid")
-                                || init.contains("loadbyid") || init.contains("fetchbyid")
-                                || init.contains("findone") || init.contains("getone")
-                                || (init.contains("get") && init.contains("byid"))
-                                || (init.contains("find") && init.contains("byid"))
-                                || init.contains("orelsethrow") || init.contains("orelse");
+                        fetchedFromRepository = SpringDataUtils.isRepositoryFetchExpression(init);
                     }
                     break;
                 }

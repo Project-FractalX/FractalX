@@ -12,7 +12,11 @@ public final class SpringBootVersionUtil {
      * Boot 4.x or higher.  Handles {@code null} and blank strings safely.
      */
     public static boolean isBoot4Plus(String version) {
-        return version != null && !version.isBlank()
-                && Character.getNumericValue(version.charAt(0)) >= 4;
+        if (version == null || version.isBlank()) return false;
+        try {
+            return Integer.parseInt(version.split("\\.")[0]) >= 4;
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 }

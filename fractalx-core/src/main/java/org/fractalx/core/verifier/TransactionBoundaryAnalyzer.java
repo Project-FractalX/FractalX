@@ -78,7 +78,10 @@ public class TransactionBoundaryAnalyzer {
         try (Stream<Path> walk = Files.walk(srcJava)) {
             walk.filter(Files::isRegularFile)
                     .filter(p -> p.toString().endsWith(".java"))
-                    .filter(p -> !p.getFileName().toString().endsWith("Client.java"))
+                    // Only exclude *Client.java files in the generated client/ package
+                    // to avoid dropping legitimate domain classes named *Client.java
+                    .filter(p -> !(p.getFileName().toString().endsWith("Client.java")
+                                   && p.toString().replace('\\', '/').contains("/client/")))
                     .forEach(file -> analyseFile(file, serviceName, violations));
         } catch (IOException e) {
             log.debug("Could not walk {}: {}", srcJava, e.getMessage());

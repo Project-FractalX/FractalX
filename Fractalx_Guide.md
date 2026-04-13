@@ -64,7 +64,7 @@
 
 FractalX is a **code generation Maven plugin** that reads your modular monolith source code and produces a complete set of independently-runnable Spring Boot microservices, an API gateway, a saga orchestrator, an admin UI, a logger service, and a service registry — all wired together with distributed tracing, structured logging, and resilience patterns.
 
-**Generation happens at build time**, not at runtime. You annotate your monolith classes, run `mvn fractalx:decompose`, and receive a fully-functional distributed system in an `fractalx-output/` directory.
+**Generation happens at build time**, not at runtime. You annotate your monolith classes, run `mvn fractalx:decompose`, and receive a fully-functional distributed system in an `microservices/` directory.
 
 **Key principle**: your monolith continues to compile and run as a normal Spring Boot application. FractalX reads it statically. You never have to give up the monolith.
 
@@ -83,13 +83,13 @@ Your monolith depends on **`fractalx-annotations`** (to write annotations) and *
 
 ## 2. Project Layout — What FractalX Generates
 
-After `mvn fractalx:decompose` the `fractalx-output/` directory contains:
+After `mvn fractalx:decompose` the `microservices/` directory contains:
 
 ```
-fractalx-output/
+microservices/
   fractalx-registry/          — Custom service registry (port 8761)
   fractalx-gateway/           — Spring Cloud Gateway (port 9999)
-  fractalx-admin/             — Admin UI + REST API (port 9090)
+  admin-service/              — Admin UI + REST API (port 9090)
   logger-service/             — Centralized log collector (port 9099)
   fractalx-saga-orchestrator/ — Saga engine, only when @DistributedSaga is found (port 8099)
   order-service/              — Your @DecomposableModule, one dir per module
@@ -400,7 +400,7 @@ DecomposeMojo.execute()
     │       │       Returns List<SagaDefinition>
     │       │
     │       ├── RegistryServiceGenerator.generate()
-    │       │       Writes fractalx-output/fractalx-registry/
+    │       │       Writes microservices/fractalx-registry/
     │       │
     │       ├── FOR EACH MODULE — run pipeline:
     │       │   ├── PomGenerator              — generates pom.xml with all deps
@@ -424,16 +424,16 @@ DecomposeMojo.execute()
     │       │   └── ResilienceConfigStep      — generates Resilience4j config + YAML
     │       │
     │       ├── LoggerServiceGenerator.generate()
-    │       │       Writes fractalx-output/logger-service/
+    │       │       Writes microservices/logger-service/
     │       │
     │       ├── GatewayGenerator.generateGateway()  (only when >1 module)
-    │       │       Writes fractalx-output/fractalx-gateway/
+    │       │       Writes microservices/fractalx-gateway/
     │       │
     │       ├── AdminServiceGenerator.generateAdminService()
-    │       │       Writes fractalx-output/fractalx-admin/
+    │       │       Writes microservices/admin-service/
     │       │
     │       ├── SagaOrchestratorGenerator.generateOrchestratorService()  (only when sagas found)
-    │       │       Writes fractalx-output/fractalx-saga-orchestrator/
+    │       │       Writes microservices/fractalx-saga-orchestrator/
     │       │
     │       └── DockerComposeGenerator.generate()
     │               Writes docker-compose.yml, start-all.sh, stop-all.sh, README.md
@@ -1396,7 +1396,7 @@ A `DATA_README.md` is generated in each service root explaining:
 
 ## 17. Admin Service and Admin UI
 
-`fractalx-admin` (port 9090) is a Spring Boot service with a single-page HTML admin UI. It provides:
+`admin-service` (port 9090) is a Spring Boot service with a single-page HTML admin UI. It provides:
 
 | Section | What it Shows |
 |---|---|
@@ -1462,7 +1462,7 @@ Add the plugin to your monolith `pom.xml`:
 
 | Goal | Command | Description |
 |---|---|---|
-| `decompose` | `mvn fractalx:decompose` | Analyzes monolith and generates all microservices into `fractalx-output/` |
+| `decompose` | `mvn fractalx:decompose` | Analyzes monolith and generates all microservices into `microservices/` |
 | `verify` | `mvn fractalx:verify` | Statically verifies the generated output without starting services |
 | `start` | `mvn fractalx:start` | Starts all generated services (requires prior decompose) |
 | `stop` | `mvn fractalx:stop` | Stops all running generated services |
@@ -1475,7 +1475,7 @@ Add the plugin to your monolith `pom.xml`:
 | Parameter | Property | Default | Description |
 |---|---|---|---|
 | `sourceDirectory` | `fractalx.sourceDirectory` | `${project.build.sourceDirectory}` | Monolith `src/main/java` |
-| `outputDirectory` | `fractalx.outputDirectory` | `${project.basedir}/fractalx-output` | Where to write generated projects |
+| `outputDirectory` | `fractalx.outputDirectory` | `${project.basedir}/microservices` | Where to write generated projects |
 | `skip` | `fractalx.skip` | `false` | Skip decomposition entirely |
 | `generate` | `fractalx.generate` | `true` | Set `false` to only analyze, not generate |
 
@@ -1502,11 +1502,11 @@ mvn fractalx:decompose -Dfractalx.skip=true
 
   Infrastructure
     fractalx-gateway     http://localhost:9999
-    fractalx-admin       http://localhost:9090
+    admin-service        http://localhost:9090
     fractalx-registry    http://localhost:8761
 
   Get started
-    cd fractalx-output
+    cd microservices
     ./start-all.sh
     docker-compose up -d
 

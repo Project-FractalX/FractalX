@@ -17,6 +17,7 @@ import java.util.Map;
  * <pre>
  * fractalx:
  *   base-package: com.acme.generated       # defaults to monolith groupId + ".generated"
+ *   java-version: 21                       # defaults to version read from source pom.xml, then 21
  *   spring-boot-version: 3.3.2             # defaults to version read from source pom.xml
  *   spring-cloud-version: 2023.0.1
  *   registry:
@@ -25,10 +26,13 @@ import java.util.Map;
  *   logger:
  *     url: http://logger-host:9099
  *     port: 9099
+ *   initial-service-version: 1.0.0-SNAPSHOT  # version for generated service pom.xml artifacts
  *   saga:
  *     port: 8099
  *   otel:
  *     endpoint: http://jaeger-host:4317
+ *     jaeger-ui-port: 16686
+ *     jaeger-otlp-port: 4317
  *   gateway:
  *     port: 9999
  *     cors:
@@ -47,8 +51,8 @@ import java.util.Map;
  *     retry-wait-duration: 100ms
  *     timeout-duration: 2s
  *   docker:
- *     maven-build-image: maven:3.9-eclipse-temurin-17
- *     jre-runtime-image: eclipse-temurin:17-jre-jammy
+ *     maven-build-image: maven:3.9-eclipse-temurin-21  # defaults derived from java-version
+ *     jre-runtime-image: eclipse-temurin:21-jre-jammy  # defaults derived from java-version
  *     jaeger-image: jaegertracing/all-in-one:1.53
  *   services:
  *     order-service:
@@ -74,11 +78,15 @@ public record FractalxConfig(
 
         // ── Generalisation fields ─────────────────────────────────────────────
         String basePackage,          // null → derived from source pom groupId at read time
+        String javaVersion,          // defaults to version read from source pom.xml, then "21"
+        String initialServiceVersion, // version for generated service pom.xml artifacts
         String springBootVersion,
         String springCloudVersion,
         int    registryPort,
         int    loggerPort,
         int    sagaPort,
+        int    jaegerUiPort,
+        int    jaegerOtlpPort,
         ResilienceDefaults resilience,
         DockerImages dockerImages,
         FeatureFlags features,
@@ -152,9 +160,13 @@ public record FractalxConfig(
             String jaegerImage
     ) {
         public static DockerImages defaults() {
+            return defaults("21");
+        }
+
+        public static DockerImages defaults(String javaVersion) {
             return new DockerImages(
-                    "maven:3.9-eclipse-temurin-17",
-                    "eclipse-temurin:17-jre-jammy",
+                    "maven:3.9-eclipse-temurin-" + javaVersion,
+                    "eclipse-temurin:" + javaVersion + "-jre-jammy",
                     "jaegertracing/all-in-one:1.53"
             );
         }
@@ -173,11 +185,15 @@ public record FractalxConfig(
                 9090,
                 Map.of(),
                 null,
+                "21",
+                "1.0.0-SNAPSHOT",
                 "3.2.0",
                 "2023.0.0",
                 8761,
                 9099,
                 8099,
+                16686,
+                4317,
                 ResilienceDefaults.defaults(),
                 DockerImages.defaults(),
                 FeatureFlags.defaults(),
@@ -200,8 +216,9 @@ public record FractalxConfig(
     public FractalxConfig withBasePackage(String basePackage) {
         return new FractalxConfig(registryUrl, loggerUrl, otelEndpoint, gatewayPort,
                 corsAllowedOrigins, oauth2JwksUri, adminPort, serviceOverrides,
-                basePackage, springBootVersion, springCloudVersion, registryPort,
-                loggerPort, sagaPort, resilience, dockerImages, features, naming);
+                basePackage, javaVersion, initialServiceVersion, springBootVersion, springCloudVersion,
+                registryPort, loggerPort, sagaPort, jaegerUiPort, jaegerOtlpPort,
+                resilience, dockerImages, features, naming);
     }
 
     /** Returns the configured port for a service, or {@code defaultPort} if not set. */

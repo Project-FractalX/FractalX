@@ -136,13 +136,47 @@ public class AuthPatternDetector {
             for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
 
                 // ── Detect auth controller ──────────────────────────────────
-                if (authPkg.get() == null && hasAnnotation(cls, "RestController")) {
-                    boolean mappedToAuth = cls.getAnnotations().stream()
-                            .anyMatch(a -> isRequestMappingToAuth(a))
-                            || cls.getMethods().stream()
-                               .anyMatch(m -> m.getAnnotations().stream()
-                                              .anyMatch(a -> isMappingToAuthLogin(a)));
-                    if (mappedToAuth) {
+                if (authPkg.get() == null) {
+                    boolean isAuthClass = false;
+
+                    // 1. @RestController with auth-related request mappings
+                    if (hasAnnotation(cls, "RestController")) {
+                        isAuthClass = cls.getAnnotations().stream()
+                                .anyMatch(this::isRequestMappingToAuth)
+                                || cls.getMethods().stream()
+                                   .anyMatch(m -> m.getAnnotations().stream()
+                                                  .anyMatch(this::isMappingToAuthLogin));
+                        // Also check method parameters for Spring Security types
+                        if (!isAuthClass) {
+                            isAuthClass = cls.getMethods().stream().anyMatch(m ->
+                                    m.getParameters().stream().anyMatch(p -> {
+                                        String pType = p.getType().asString();
+                                        return pType.equals("Authentication")
+                                            || pType.equals("Principal")
+                                            || p.getAnnotations().stream()
+                                                .anyMatch(a -> a.getNameAsString().equals("AuthenticationPrincipal"));
+                                    }));
+                        }
+                    }
+
+                    // 2. @EnableWebSecurity configuration class
+                    if (!isAuthClass) {
+                        isAuthClass = hasAnnotation(cls, "EnableWebSecurity");
+                    }
+
+                    // 3. Class implements UserDetailsService
+                    if (!isAuthClass) {
+                        isAuthClass = cls.getImplementedTypes().stream()
+                                .anyMatch(t -> t.getNameAsString().equals("UserDetailsService"));
+                    }
+
+                    // 4. Class has a method returning SecurityFilterChain
+                    if (!isAuthClass) {
+                        isAuthClass = cls.getMethods().stream()
+                                .anyMatch(m -> m.getType().asString().equals("SecurityFilterChain"));
+                    }
+
+                    if (isAuthClass) {
                         authPkg.set(pkg);
                         log.debug("Auth controller found in package {}", pkg);
                     }
@@ -179,22 +213,32 @@ public class AuthPatternDetector {
 
     private boolean hasAnnotation(ClassOrInterfaceDeclaration cls, String name) {
         return cls.getAnnotations().stream()
-                  .anyMatch(a -> a.getNameAsString().equals(name));
+                  .anyMatch(a -> {
+                      String n = a.getNameAsString();
+                      // Match simple name or fully-qualified (e.g. @jakarta.persistence.Entity)
+                      return n.equals(name) || n.endsWith("." + name);
+                  });
     }
+
+    private static final Set<String> AUTH_PATH_FRAGMENTS = Set.of(
+            "/api/auth", "/auth", "/login", "/logout", "/register", "/signup",
+            "/signin", "/oauth", "/token", "/refresh-token", "/forgot-password",
+            "/sso", "/identity", "/session"
+    );
 
     private boolean isRequestMappingToAuth(AnnotationExpr ann) {
         String name = ann.getNameAsString();
         if (!name.equals("RequestMapping")) return false;
-        String str = ann.toString();
-        return str.contains("/api/auth") || str.contains("\"/auth\"");
+        String str = ann.toString().toLowerCase();
+        return AUTH_PATH_FRAGMENTS.stream().anyMatch(str::contains);
     }
 
     private boolean isMappingToAuthLogin(AnnotationExpr ann) {
         String name = ann.getNameAsString();
         if (!name.equals("PostMapping") && !name.equals("GetMapping")
                 && !name.equals("RequestMapping")) return false;
-        String str = ann.toString();
-        return str.contains("/api/auth") || str.contains("/auth/login") || str.contains("/auth/register");
+        String str = ann.toString().toLowerCase();
+        return AUTH_PATH_FRAGMENTS.stream().anyMatch(str::contains);
     }
 
     /**

@@ -1,8 +1,8 @@
 # FractalX
 
-[![Maven Central](https://img.shields.io/badge/maven--central-0.4.0-blue)](https://central.sonatype.com/artifact/org.fractalx/fractalx-annotations)
+[![Maven Central](https://img.shields.io/badge/maven--central-0.4.1-blue)](https://central.sonatype.com/artifact/org.fractalx/fractalx-annotations)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
-[![Java](https://img.shields.io/badge/java-17%2B-orange)](https://adoptium.net/)
+[![Java](https://img.shields.io/badge/java-21%2B-orange)](https://adoptium.net/)
 [![Spring Boot](https://img.shields.io/badge/spring--boot-3.2%2B%20%7C%204.x-brightgreen)](https://spring.io/projects/spring-boot)
 
 **Static decomposition framework — converts modular monolithic Spring Boot applications into production-ready microservice deployments via AST analysis and code generation.**
@@ -25,7 +25,7 @@ Manual microservices migrations are slow, error-prone, and expensive — requiri
 | Database isolation | Manually split schemas | `DataIsolationGenerator` + Flyway scaffolds |
 | Distributed sagas | Write orchestrator from scratch | Full saga service from `@DistributedSaga` |
 | Docker deployment | Write Dockerfiles + Compose | Generated `Dockerfile` + `docker-compose.yml` |
-| Admin dashboard | Build your own | 14-section ops dashboard auto-generated |
+| Admin dashboard | Build your own | 15-section ops dashboard auto-generated |
 
 ---
 
@@ -60,7 +60,9 @@ Manual microservices migrations are slow, error-prone, and expensive — requiri
 24. [Known Limitations](#24-known-limitations)
 25. [JPA Data Layer and Entity Relationships](#25-jpa-data-layer-and-entity-relationships)
 26. [API Gateway, Registry, and Service Communication](#26-api-gateway-registry-and-service-communication)
-27. [License](#27-license)
+27. [`fractalx-initializr-core` — Scaffold New Projects](#27-fractalx-initializr-core--scaffold-new-projects)
+28. [Full Monolith Example — Annotated Code](#28-full-monolith-example--annotated-code)
+29. [License](#29-license)
 
 ---
 
@@ -72,7 +74,7 @@ Manual microservices migrations are slow, error-prone, and expensive — requiri
 <dependency>
     <groupId>org.fractalx</groupId>
     <artifactId>fractalx-annotations</artifactId>
-    <version>0.4.0</version>
+    <version>0.4.1</version>
 </dependency>
 ```
 
@@ -98,7 +100,7 @@ That is the only source change required. No other annotations are needed in your
 <plugin>
     <groupId>org.fractalx</groupId>
     <artifactId>fractalx-maven-plugin</artifactId>
-    <version>0.4.0</version>
+    <version>0.4.1</version>
 </plugin>
 ```
 
@@ -109,7 +111,7 @@ mvn fractalx:decompose
 ```
 
 ```
-[INFO] FractalX 0.4.0 -- starting decomposition
+[INFO] FractalX 0.4.1 -- starting decomposition
 [INFO] Phase 1: Parsing 22 source files ...
 [INFO] Phase 2: Detected 2 modules, 1 cross-module dependency
 [INFO] Generating order-service   (port 8081) ...
@@ -122,7 +124,7 @@ mvn fractalx:decompose
 ### Step 5 -- Start everything
 
 ```bash
-cd fractalx-output
+cd microservices
 ./start-all.sh
 ```
 
@@ -182,7 +184,7 @@ Then, after all services are generated:
 ```
 GatewayGenerator           -> fractalx-gateway (Spring Cloud Gateway + security + CORS + metrics)
 RegistryServiceGenerator   -> fractalx-registry (lightweight REST-based service registry)
-AdminServiceGenerator      -> admin-service (14-section ops dashboard)
+AdminServiceGenerator      -> admin-service (15-section ops dashboard)
 LoggerServiceGenerator     -> logger-service (structured log ingestion + query)
 SagaOrchestratorGenerator  -> fractalx-saga-orchestrator (when @DistributedSaga is found)
 DockerComposeGenerator     -> docker-compose.yml + multi-stage Dockerfiles
@@ -260,7 +262,7 @@ The host is resolved dynamically from `fractalx-registry` at startup -- no hardc
 
 | Requirement | Version | Notes |
 |---|---|---|
-| Java | 17+ | Required |
+| Java | 21+ (configurable) | Required |
 | Maven | 3.8+ | Required |
 | Git | any | Required |
 | Docker + Docker Compose | 24+ | Optional -- needed only for container deployment |
@@ -336,7 +338,7 @@ FractalX detects methods annotated with `@DistributedSaga`, maps their cross-ser
 ```java
 @DistributedSaga(
     sagaId       = "checkout",
-    compensation = "cancelCheckout"
+    compensationMethod = "cancelCheckout"
 )
 public void processCheckout(Long orderId, Long userId) {
     orderService.confirm(orderId);
@@ -398,12 +400,23 @@ Create `fractalx-config.yml` in `src/main/resources/` alongside your `applicatio
 
 ```yaml
 fractalx:
+  base-package: com.acme.generated            # defaults to monolith groupId + ".generated"
+  java-version: 21                            # defaults to version read from source pom.xml, then 21
+  initial-service-version: 1.0.0-SNAPSHOT     # version for generated pom.xml artifacts (can inherit monolith version)
+  spring-boot-version: 3.3.2                  # defaults to version read from source pom.xml
+  spring-cloud-version: 2023.0.1
   registry:
-    url: http://my-registry-host:8761        # baked into FRACTALX_REGISTRY_URL fallback
+    url: http://my-registry-host:8761         # baked into FRACTALX_REGISTRY_URL fallback
+    port: 8761
   logger:
-    url: http://my-logger-host:9099          # baked into FRACTALX_LOGGER_URL fallback
+    url: http://my-logger-host:9099           # baked into FRACTALX_LOGGER_URL fallback
+    port: 9099
+  saga:
+    port: 8099
   otel:
-    endpoint: http://my-jaeger-host:4317     # baked into OTEL_EXPORTER_OTLP_ENDPOINT fallback
+    endpoint: http://my-jaeger-host:4317      # baked into OTEL_EXPORTER_OTLP_ENDPOINT fallback
+    jaeger-ui-port: 16686                     # Jaeger UI port in docker-compose
+    jaeger-otlp-port: 4317                    # Jaeger OTLP collector port in docker-compose
   gateway:
     port: 9999
     cors:
@@ -417,6 +430,10 @@ fractalx:
       url: jdbc:mysql://localhost:3306/admin_db
       username: admin_user
       password: secret
+  docker:
+    maven-build-image: maven:3.9-eclipse-temurin-21   # defaults derived from java-version
+    jre-runtime-image: eclipse-temurin:21-jre-jammy    # defaults derived from java-version
+    jaeger-image: jaegertracing/all-in-one:1.53
   services:
     order-service:
       datasource:
@@ -430,7 +447,7 @@ fractalx:
         password: secret
 ```
 
-All keys are optional. When absent, FractalX falls back to sensible defaults: registry `http://localhost:8761`, logger `http://localhost:9099`, Jaeger `http://localhost:4317`. The source monolith's `application.yml` and `application.properties` are also consulted as a secondary fallback.
+All keys are optional. When absent, FractalX falls back to sensible defaults (e.g., Java 21, registry `http://localhost:8761`, logger `http://localhost:9099`, Jaeger `http://localhost:4317`). Java version, Spring Boot version, and initial service version are also auto-detected from the monolith's `pom.xml`. The source monolith's `application.yml` and `application.properties` are consulted as a secondary fallback.
 
 ### `@Value` property migration
 
@@ -586,7 +603,7 @@ Every goal renders the **FRACTALX** ASCII banner. The interactive menu is the re
 
 | Flag | Default | Description |
 |---|---|---|
-| `-Dfractalx.outputDirectory` | `./fractalx-output` | Output directory for generated services |
+| `-Dfractalx.outputDirectory` | `./microservices` | Output directory for generated services |
 | `-Dfractalx.color=false` | `true` | Disable ANSI colors (auto-disabled on non-TTY) |
 
 ---
@@ -755,7 +772,7 @@ mvn fractalx:stop                                        # 7. Stop all
 ## 8. Generated Output
 
 ```
-fractalx-output/
+microservices/
 +-- fractalx-registry/              # Service discovery registry -- start first
 +-- order-service/
 |   +-- pom.xml                     # netscope-server, netscope-client, resilience4j deps
@@ -814,7 +831,7 @@ fractalx-output/
 ### One command (recommended)
 
 ```bash
-cd fractalx-output
+cd microservices
 ./start-all.sh
 ```
 
@@ -861,7 +878,7 @@ cd admin-service    && mvn spring-boot:run
 ## 10. Docker Deployment
 
 ```bash
-cd fractalx-output
+cd microservices
 docker compose up --build
 ```
 
@@ -1075,6 +1092,95 @@ When `@DistributedSaga` is detected, FractalX generates `fractalx-saga-orchestra
 - `@NetScopeClient` interfaces for every service called in the saga
 - REST: `POST /saga/{sagaId}/start`, `GET /saga/status/{correlationId}`, `GET /saga`
 
+### Saga state machine
+
+```
+               ┌─────────────────────────────────────┐
+POST /start    │                                     │
+──────────► STARTED ──► IN_PROGRESS                  │
+                             │                        │
+                  step 1 OK ─┤                        │
+                  step 2 OK ─┤                        │
+                  step N OK ─┴──► DONE ───────────────┘
+                                                      │
+                  any step FAILS                      │
+                             │                        │
+                             ▼                        │
+                        COMPENSATING                  │
+                  (compensate N ... 1 in reverse)     │
+                             │                        │
+                             ▼                        │
+                           FAILED ───────────────────►┘
+```
+
+Step-by-step behavior:
+1. `POST /saga/{sagaId}/start` persists a `SagaInstance` row with status `STARTED`.
+2. The orchestrator calls each `SagaStep` in order via NetScope gRPC. Status advances to `IN_PROGRESS`.
+3. On step success: advances to the next step.
+4. On step failure: transitions to `COMPENSATING` and calls compensation methods in **reverse order** (newest step first).
+5. After all compensations: transitions to `FAILED`.
+6. When all steps succeed: transitions to `DONE`.
+
+### Saga completion callbacks
+
+After a saga reaches `DONE` or `FAILED`, the orchestrator calls back the **owner service** via HTTP:
+
+| Outcome | Endpoint called on owner service |
+|---|---|
+| Success | `POST /internal/saga-complete/{correlationId}` |
+| Failure | `POST /internal/saga-failed/{correlationId}` |
+
+These endpoints are implemented in `SagaCompletionController.java` (generated into the owner service's `saga/` package). The controller extracts the aggregate ID from the saga payload (e.g., `orderId`), then marks the entity `CONFIRMED` on success or `CANCELLED` on failure.
+
+The owner URL is configured in the orchestrator's `application.yml`:
+
+```yaml
+fractalx:
+  saga:
+    owner-urls:
+      place-order-saga: ${PLACE_ORDER_SAGA_OWNER_URL:http://localhost:8081}
+```
+
+### Saga notification retry mechanism
+
+The initial callback is fire-and-forget. If the owner service is down, `SagaInstance` tracks retry state so no notification is permanently lost.
+
+**Three extra columns on `SagaInstance`:**
+
+| Field | Column | Default | Purpose |
+|---|---|---|---|
+| `ownerNotified` | `owner_notified BOOLEAN` | `false` | Set `true` when callback succeeds |
+| `notificationRetryCount` | `notification_retry_count INT` | `0` | Incremented on each failed attempt |
+| `lastNotificationAttempt` | `last_notification_attempt TIMESTAMP` | `null` | Timestamp of most recent attempt |
+
+**`retryPendingNotifications()` scheduled method** (generated into each `*SagaService`):
+
+```java
+private static final int MAX_NOTIFICATION_RETRIES = 10;
+
+@Scheduled(fixedDelay = 2000)
+@Transactional
+public void retryPendingNotifications() {
+    List<SagaInstance> pending = sagaRepository
+        .findByOwnerNotifiedFalseAndStatusIn(List.of(SagaStatus.DONE, SagaStatus.FAILED));
+    for (SagaInstance instance : pending) {
+        if (instance.getNotificationRetryCount() >= MAX_NOTIFICATION_RETRIES) {
+            log.error("Saga notification dead-letter: correlationId={} — manual intervention required", ...);
+            continue;
+        }
+        if (instance.getStatus() == SagaStatus.DONE) notifyOwnerComplete(instance);
+        else notifyOwnerFailed(instance);
+    }
+}
+```
+
+| Parameter | Value |
+|---|---|
+| Poll interval | 2 seconds (`fixedDelay = 2000`) |
+| Max retries | 10 |
+| Dead-letter action | Log `ERROR` with `correlationId`, stop retrying |
+| Recovery on owner restart | Automatic — next poll (≤ 2 s) delivers the notification |
+
 ---
 
 ## 16. Observability & Monitoring
@@ -1083,22 +1189,79 @@ FractalX generates a complete observability stack automatically -- no instrument
 
 ### Distributed tracing -- OpenTelemetry + Jaeger
 
-Each service gets an `OtelConfig.java` that configures the OpenTelemetry SDK:
+Each service gets three generated OTel configuration classes:
 
+**`OtelConfig.java`** (`@ConditionalOnMissingBean(OpenTelemetry.class)`) configures the OpenTelemetry SDK:
 - Exports spans via **OTLP/gRPC** to Jaeger (port 4317)
-- Propagates **W3C `traceparent`** and **Baggage** across all service calls
+- Registers **W3C `traceparent`** and **W3C Baggage** propagators
 - Tags every span with `service.name`
 - Uses `BatchSpanProcessor` for non-blocking export
+
+**`CorrelationTracingConfig.java`** (Spring MVC `HandlerInterceptor`):
+- Reads `MDC["correlationId"]` on every HTTP request
+- Tags the active OTel/Micrometer span with `correlation.id` (dot-separated key)
+- Enables Jaeger search: `/api/traces?tags=correlation.id%3D<value>`
+
+**`TracingExclusionConfig.java`**:
+- Suppresses actuator endpoint spans (`/actuator/**`) from being exported
+- Suppresses `@Scheduled` task spans that would otherwise pollute Jaeger
+
+To disable tracing for a specific service in `fractalx-config.yml`:
+
+```yaml
+fractalx:
+  services:
+    inventory-service:
+      tracing:
+        enabled: false
+```
+
+Disabling tracing omits all three classes and sets `management.tracing.sampling.probability: 0.0`. Correlation ID propagation and log shipping are **not affected**.
+
+> The **API Gateway** and **Saga Orchestrator** are always traced regardless of any per-service flag.
 
 Jaeger UI: **http://localhost:16686**
 
 ### Correlation ID propagation
 
+A **correlation ID** is a UUID that identifies a single logical request chain across all services. It is distinct from an OTel trace ID (though they are linked via the `correlation.id` span tag).
+
 ```
-Client -> Gateway (assigns X-Correlation-Id) -> order-service -> payment-service
-                                                     |                |
-                                               logger-service   logger-service
+HTTP Client
+    │  X-Correlation-Id: f47ac10b-...  (optional — generated if missing)
+    ▼
+TraceFilter (fractalx-runtime, @Order(HIGHEST_PRECEDENCE))
+    │  Reads X-Correlation-Id header OR generates UUID
+    │  Puts correlationId into MDC("correlationId")
+    │  Echoes header back in response
+    ▼
+HTTP Handler (@RestController)
+    │  MDC["correlationId"] = "f47ac10b-..."
+    │  FractalLogAppender reads it for every log event
+    ▼
+NetScopeContextInterceptor (client side, outgoing gRPC call)
+    │  Reads MDC["correlationId"]
+    │  Injects x-correlation-id gRPC metadata on every outgoing call
+    ▼
+NetScopeContextInterceptor (server side, receiving service)
+    │  Extracts x-correlation-id from gRPC metadata
+    │  Populates MDC["correlationId"] in onMessage() and onHalfClose()
+    │  Generates a new UUID if header absent
+    ▼
+Downstream service handler
+    │  MDC["correlationId"] = same "f47ac10b-..." as originating request
+    │  All logs carry the same correlation ID
 ```
+
+Key points:
+- `TraceFilter` runs at `Ordered.HIGHEST_PRECEDENCE` — before Spring Security, before any `@RestController`.
+- `NetScopeContextInterceptor` propagates via `x-correlation-id` gRPC metadata key (lowercase).
+- `OutboxPoller` saves the correlation ID to `OutboxEvent` (captured from MDC) and forwards it as `X-Correlation-Id` when calling the saga orchestrator.
+- `CorrelationTracingConfig` (generated `HandlerInterceptor`) reads `MDC["correlationId"]` and tags the active OTel span with `correlation.id` — making traces searchable in Jaeger by correlation ID.
+
+**NetScope gRPC wiring internals:**
+- `NetScopeGrpcInterceptorConfigurer` — a `BeanPostProcessor` in `fractalx-runtime` that intercepts both the `NetScopeChannelFactory` (client) and `NetScopeGrpcServer` (server) beans to wire `NetScopeContextInterceptor` automatically.
+- `CorrelationAwareNetScopeGrpcServer` — overrides the default NetScope gRPC server bean to ensure the interceptor is applied even when the server bean is created before the interceptor.
 
 The same ID flows through MDC (SLF4J), gRPC metadata, W3C `traceparent`, and all log entries.
 
@@ -1188,6 +1351,15 @@ All generated services expose `/actuator/prometheus` for Prometheus scraping.
 
 Access at **http://localhost:9090** (default credentials: `admin / admin`).
 
+Override credentials at runtime via environment variables (no rebuild required):
+
+```bash
+ADMIN_USERNAME=myadmin
+ADMIN_PASSWORD=supersecret
+```
+
+These can also be set via `@AdminEnabled(username = "...", password = "...")` on your `MonolithApplication` class before decomposition.
+
 ### Dashboard sections
 
 | Group | Section | What you get |
@@ -1225,7 +1397,7 @@ fractalx:
 Then activate the `db` profile:
 
 ```bash
-cd fractalx-output/admin-service
+cd microservices/admin-service
 mvn spring-boot:run -Dspring-boot.run.profiles=db
 ```
 
@@ -1635,7 +1807,7 @@ spring.sql.init.enabled: false
 ```bash
 mvn spring-boot:run -e -X                                    # full Maven debug
 mvn spring-boot:run -Dspring-boot.run.arguments="--debug"    # Spring condition report
-tail -f fractalx-output/order-service.log                    # service log
+tail -f microservices/order-service.log                    # service log
 curl -v http://localhost:9999/api/orders 2>&1 | grep -i "correlation\|trace"
 ```
 
@@ -2353,6 +2525,396 @@ All three gateway auth paths (Bearer JWT, Basic, API Key) mint the token via the
 
 ---
 
-## 27. License
+## 27. `fractalx-initializr-core` — Scaffold New Projects
+
+`fractalx-initializr-core` is a **project scaffolding module** that generates a complete, ready-to-decompose modular monolith from a `fractalx.yaml` specification file. It is the inverse of `fractalx:decompose` — while `decompose` splits a monolith into microservices, `initializr-core` builds the monolith skeleton from scratch.
+
+### When to use it
+
+Use `fractalx-initializr-core` when starting a brand-new project. Instead of hand-writing a Spring Boot application with FractalX annotations, you describe your desired service boundaries in `fractalx.yaml` and the initializer generates all the boilerplate.
+
+### `fractalx.yaml` specification format
+
+```yaml
+project:
+  groupId: com.example
+  artifactId: my-platform
+  version: 1.0.0-SNAPSHOT
+  javaVersion: "21"
+  springBootVersion: 3.3.2
+  description: "My FractalX modular monolith"
+
+  services:
+    - name: order-service
+      port: 8081
+      database: postgresql
+      schema: order_db
+      apiStyle: rest
+      adminEnabled: true
+      entities:
+        - name: Order
+          fields:
+            - name: customerId
+              type: Long
+            - name: totalAmount
+              type: BigDecimal
+            - name: status
+              type: String
+      dependencies:
+        - payment-service
+        - inventory-service
+
+    - name: payment-service
+      port: 8082
+      database: postgresql
+      schema: payment_db
+      apiStyle: rest
+      entities:
+        - name: Payment
+          fields:
+            - name: orderId
+              type: Long
+            - name: amount
+              type: BigDecimal
+            - name: status
+              type: String
+
+    - name: inventory-service
+      port: 8083
+      database: h2
+      apiStyle: rest+grpc
+      entities:
+        - name: InventoryItem
+          fields:
+            - name: productId
+              type: Long
+            - name: quantity
+              type: Integer
+
+  sagas:
+    - id: place-order-saga
+      owner: order-service
+      description: "Coordinates payment and inventory reservation"
+      compensationMethod: cancelOrder
+      timeoutMs: 30000
+      steps:
+        - service: payment-service
+          method: processPayment
+        - service: inventory-service
+          method: reserveStock
+
+  infrastructure:
+    registry: true
+    gateway: true
+    adminService: true
+    loggerService: true
+
+  security:
+    gatewayAuth: jwt
+```
+
+### `ProjectSpec` model fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `groupId` | `String` | `com.example` | Maven group ID |
+| `artifactId` | `String` | `my-platform` | Maven artifact ID |
+| `version` | `String` | `1.0.0-SNAPSHOT` | Project version |
+| `javaVersion` | `String` | `21` | Java source/target version |
+| `springBootVersion` | `String` | `3.3.2` | Spring Boot parent version |
+| `packageName` | `String` | derived | Base Java package (derived as `groupId + "." + artifactId` if omitted) |
+| `description` | `String` | — | Human-readable description |
+| `services` | `List<ServiceSpec>` | — | Service boundary definitions |
+| `sagas` | `List<SagaSpec>` | — | Distributed saga definitions |
+| `infrastructure` | `InfraSpec` | all enabled | Which infrastructure services to generate |
+| `security` | `SecuritySpec` | — | Gateway auth mechanism |
+
+### `ServiceSpec` fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | `String` | — | Kebab-case service name (e.g. `order-service`) |
+| `port` | `int` | `8080` | HTTP port |
+| `database` | `String` | `h2` | `h2` / `postgresql` / `mysql` / `mongodb` / `redis` |
+| `schema` | `String` | derived | Database/schema name (defaults to `<package>_db`) |
+| `apiStyle` | `String` | `rest` | `rest` / `grpc` / `rest+grpc` |
+| `adminEnabled` | `boolean` | `false` | Generate `@AdminEnabled` on this service's application class |
+| `independentDeployment` | `boolean` | `true` | Whether service can be deployed independently |
+| `entities` | `List<EntitySpec>` | — | JPA entity definitions |
+| `dependencies` | `List<String>` | — | Other service names this service calls (generates cross-module deps) |
+
+### Generation pipeline
+
+`ProjectInitializer.initialize(spec, outputRoot)` runs 13 sequential steps:
+
+| Step | Generator | What it creates |
+|---|---|---|
+| 1 | `RootPomWriter` | Multi-module `pom.xml` with FractalX BOM |
+| 2 | `ApplicationGenerator` | `@SpringBootApplication` class with `@AdminEnabled` if configured |
+| 3 | `ApplicationYmlGenerator` | `application.yml` per service with ports, DB, OTel config |
+| 4 | `ModuleMarkerGenerator` | `@DecomposableModule`-annotated service class skeletons |
+| 5 | `EntityGenerator` | JPA `@Entity` classes from `EntitySpec` field definitions |
+| 6 | `RepositoryGenerator` | `JpaRepository` interfaces for each entity |
+| 7 | `ServiceClassGenerator` | `@Service` classes with stub methods for each dependency call |
+| 8 | `ControllerGenerator` | `@RestController` classes with CRUD endpoints per entity |
+| 9 | `FlywayMigrationGenerator` | `V1__initial_schema.sql` (for non-H2 databases) |
+| 10 | `DockerComposeGenerator` | `docker-compose.yml` + `Dockerfile` per service |
+| 11 | `GitHubActionsGenerator` | `.github/workflows/ci.yml` with build + test steps |
+| 12 | `FractalxSpecWriter` | Copies/writes `fractalx-config.yml` into `src/main/resources/` |
+| 13 | `ReadmeGenerator` | Project-level `README.md` describing the scaffold |
+
+### Programmatic usage
+
+```java
+ProjectSpec spec = new SpecFileReader().read(Path.of("fractalx.yaml"));
+new ProjectInitializer()
+    .setProgressCallbacks(
+        label -> System.out.println("  Starting: " + label),
+        label -> System.out.println("  Done:     " + label)
+    )
+    .initialize(spec, Path.of("my-platform"));
+```
+
+### What you get
+
+After running the initializer you have a fully compilable Spring Boot project with:
+- One `@DecomposableModule`-annotated class per service
+- Entities, repositories, service classes, and REST controllers
+- `fractalx-config.yml` ready for `mvn fractalx:decompose`
+- Docker Compose, Dockerfiles, and GitHub Actions CI
+- Flyway migration stubs (for PostgreSQL/MySQL services)
+
+The generated project immediately runs as a monolith (`mvn spring-boot:run`) and can be immediately decomposed (`mvn fractalx:decompose`).
+
+---
+
+## 28. Full Monolith Example — Annotated Code
+
+Here is a minimal but complete modular monolith that FractalX can fully decompose into three independent microservices with a saga.
+
+### `pom.xml` (relevant excerpt)
+
+```xml
+<dependencies>
+    <dependency>
+        <groupId>org.fractalx</groupId>
+        <artifactId>fractalx-annotations</artifactId>
+        <version>0.4.1</version>
+    </dependency>
+    <dependency>
+        <groupId>org.fractalx</groupId>
+        <artifactId>fractalx-runtime</artifactId>
+        <version>0.4.1</version>
+    </dependency>
+    <!-- your normal Spring Boot deps -->
+</dependencies>
+
+<build>
+    <plugins>
+        <plugin>
+            <groupId>org.fractalx</groupId>
+            <artifactId>fractalx-maven-plugin</artifactId>
+            <version>0.4.1</version>
+        </plugin>
+    </plugins>
+</build>
+```
+
+### `src/main/resources/fractalx-config.yml`
+
+```yaml
+fractalx:
+  otel:
+    endpoint: http://localhost:4317
+
+  services:
+    order-service:
+      port: 8081
+    payment-service:
+      port: 8082
+    inventory-service:
+      port: 8083
+      tracing:
+        enabled: false    # inventory does not need tracing
+```
+
+### `MonolithApplication.java`
+
+```java
+@SpringBootApplication
+@AdminEnabled(port = 9090, username = "admin", password = "admin123")
+public class MonolithApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(MonolithApplication.class, args);
+    }
+}
+```
+
+### `order/OrderModule.java`
+
+```java
+package com.example.order;
+
+import org.fractalx.annotations.DecomposableModule;
+import org.fractalx.annotations.DistributedSaga;
+
+@DecomposableModule(
+    serviceName  = "order-service",
+    port         = 8081,
+    ownedSchemas = {"orders"}
+)
+@Service
+public class OrderModule {
+
+    private final PaymentService   paymentService;
+    private final InventoryService inventoryService;
+    private final OrderRepository  orderRepository;
+
+    public OrderModule(PaymentService paymentService,
+                       InventoryService inventoryService,
+                       OrderRepository orderRepository) {
+        this.paymentService   = paymentService;
+        this.inventoryService = inventoryService;
+        this.orderRepository  = orderRepository;
+    }
+
+    @DistributedSaga(
+        sagaId             = "place-order-saga",
+        compensationMethod = "cancelPlaceOrder",
+        timeout            = 30000,
+        description        = "Coordinates payment and inventory to place an order."
+    )
+    @Transactional
+    public Order placeOrder(Long customerId, BigDecimal totalAmount) {
+        // Local work: save a PENDING order
+        Order order = new Order(customerId, totalAmount, "PENDING");
+        order = orderRepository.save(order);
+        Long orderId = order.getId();    // extra local var — included in saga payload
+
+        // Cross-module calls — REPLACED by outboxPublisher.publish() in generated code:
+        paymentService.processPayment(customerId, totalAmount, orderId);
+        inventoryService.reserveStock(orderId);
+
+        // These lines are removed by SagaMethodTransformer (orphaned after publish):
+        order.setStatus("CONFIRMED");
+        return orderRepository.save(order);
+    }
+
+    @Transactional
+    public void cancelPlaceOrder(Long customerId, BigDecimal totalAmount) {
+        orderRepository.findTopByCustomerIdAndStatusOrderByCreatedAtDesc(customerId, "PENDING")
+            .ifPresent(o -> {
+                o.setStatus("CANCELLED");
+                orderRepository.save(o);
+            });
+    }
+}
+```
+
+> **What FractalX does to this method**: `SagaMethodTransformer` removes the two cross-service calls and inserts `outboxPublisher.publish("place-order-saga", String.valueOf(customerId), sagaPayload)` in their place. The payload map contains `customerId`, `totalAmount`, and `orderId` (the extra local var). The `return` statement is rewritten to use the last declared `Order` variable.
+
+### `payment/PaymentModule.java`
+
+```java
+package com.example.payment;
+
+import org.fractalx.annotations.DecomposableModule;
+
+@DecomposableModule(
+    serviceName  = "payment-service",
+    port         = 8082,
+    ownedSchemas = {"payments"}
+)
+@Service
+public class PaymentModule {
+
+    private final PaymentRepository paymentRepository;
+
+    public PaymentModule(PaymentRepository paymentRepository) {
+        this.paymentRepository = paymentRepository;
+    }
+
+    // Step 1 in place-order-saga
+    @Transactional
+    public Payment processPayment(Long customerId, BigDecimal amount, Long orderId) {
+        Payment payment = new Payment(customerId, amount, orderId, "PROCESSED");
+        return paymentRepository.save(payment);
+    }
+
+    // Compensation for step 1 — prefix "cancel" + "ProcessPayment"
+    @Transactional
+    public void cancelProcessPayment(Long customerId, BigDecimal amount, Long orderId) {
+        paymentRepository.findByOrderId(orderId).ifPresent(p -> {
+            p.setStatus("REFUNDED");
+            paymentRepository.save(p);
+        });
+    }
+}
+```
+
+### `inventory/InventoryModule.java`
+
+```java
+package com.example.inventory;
+
+import org.fractalx.annotations.DecomposableModule;
+
+@DecomposableModule(
+    serviceName  = "inventory-service",
+    port         = 8083,
+    ownedSchemas = {"inventory"}
+)
+@Service
+public class InventoryModule {
+
+    private final InventoryRepository inventoryRepository;
+
+    public InventoryModule(InventoryRepository inventoryRepository) {
+        this.inventoryRepository = inventoryRepository;
+    }
+
+    // Step 2 in place-order-saga
+    @Transactional
+    public void reserveStock(Long orderId) {
+        // reserve logic
+    }
+
+    // Compensation for step 2 — prefix "cancel" + "ReserveStock"
+    @Transactional
+    public void cancelReserveStock(Long orderId) {
+        // release reservation
+    }
+}
+```
+
+### What `mvn fractalx:decompose` produces
+
+```
+microservices/
+  order-service/        port 8081 + gRPC 18081
+  payment-service/      port 8082 + gRPC 18082
+  inventory-service/    port 8083 + gRPC 18083
+  fractalx-gateway/     port 9999
+  admin-service/        port 9090
+  logger-service/       port 9099
+  fractalx-registry/    port 8761
+  fractalx-saga-orchestrator/  port 8099
+  docker-compose.yml
+  start-all.sh
+  stop-all.sh
+```
+
+Each generated service has:
+- Full Spring Boot application with `pom.xml`, `Dockerfile`, `application.yml`
+- NetScope gRPC client for each dependency (`PaymentServiceClient`, `InventoryServiceClient`)
+- `OutboxPublisher` + `OutboxPoller` (in `order-service`)
+- `SagaCompletionController` (in `order-service`)
+- Flyway `V1__initial_schema.sql`
+- `logback-spring.xml` with `%X{correlationId}`
+- `OtelConfig.java`, `CorrelationTracingConfig.java` (except `inventory-service` — tracing disabled)
+
+---
+
+## 29. License
 
 Licensed under the [Apache License 2.0](LICENSE).

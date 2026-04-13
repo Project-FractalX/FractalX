@@ -1,6 +1,8 @@
 package org.fractalx.core.gateway;
 
 import org.fractalx.core.model.FractalModule;
+import org.fractalx.core.naming.EnglishPluralizer;
+import org.fractalx.core.naming.NamingConventions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,6 +30,8 @@ public class GatewayRouteLocatorGenerator {
     private static final Logger log = LoggerFactory.getLogger(GatewayRouteLocatorGenerator.class);
 
     private final ControllerPathScanner scanner = new ControllerPathScanner();
+    private final EnglishPluralizer pluralizer =
+            new EnglishPluralizer(NamingConventions.defaults().irregularPlurals());
 
     public void generate(Path srcMainJava, List<FractalModule> modules) throws IOException {
         generate(srcMainJava, modules, null);
@@ -74,7 +78,7 @@ public class GatewayRouteLocatorGenerator {
             if (endpoints == null || endpoints.isEmpty()) continue;
 
             String myPrefix    = primaryPrefix.get(m);
-            String myPluralPfx = myPrefix.endsWith("s") ? myPrefix : myPrefix + "s";
+            String myPluralPfx = pluralizePathPrefix(myPrefix);
 
             Set<String> foreignPredicates = new LinkedHashSet<>();
             for (ControllerPathScanner.EndpointInfo ep : endpoints) {
@@ -83,7 +87,7 @@ public class GatewayRouteLocatorGenerator {
                 // Check whether path belongs to another module's prefix (cross-resource)
                 boolean foreign = modules.stream().filter(other -> other != m).anyMatch(other -> {
                     String op = primaryPrefix.get(other);
-                    String opp = op.endsWith("s") ? op : op + "s";
+                    String opp = pluralizePathPrefix(op);
                     return gwPath.startsWith(op) || gwPath.startsWith(opp);
                 });
                 if (!foreign) continue;
@@ -299,5 +303,14 @@ public class GatewayRouteLocatorGenerator {
         for (String part : pkg.split("/")) p = p.resolve(part);
         Files.createDirectories(p);
         return p;
+    }
+
+    /** Pluralizes the last segment of a path prefix, e.g. {@code /api/category} → {@code /api/categories}. */
+    private String pluralizePathPrefix(String prefix) {
+        int lastSlash = prefix.lastIndexOf('/');
+        if (lastSlash < 0) return pluralizer.pluralize(prefix);
+        String base = prefix.substring(0, lastSlash + 1);
+        String segment = prefix.substring(lastSlash + 1);
+        return base + pluralizer.pluralize(segment);
     }
 }

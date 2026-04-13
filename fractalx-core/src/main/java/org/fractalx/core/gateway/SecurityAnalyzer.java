@@ -236,7 +236,8 @@ public class SecurityAnalyzer {
             boolean extendsOncePerRequestFilter = cls.getExtendedTypes().stream()
                     .anyMatch(t -> t.getNameAsString().equals("OncePerRequestFilter"));
             boolean hasBearerLiteral = cu.findAll(StringLiteralExpr.class).stream()
-                    .anyMatch(s -> s.asString().contains("Bearer ") || s.asString().equals("Authorization"));
+                    .anyMatch(s -> s.asString().toLowerCase().contains("bearer ")
+                               || s.asString().equalsIgnoreCase("authorization"));
             return extendsOncePerRequestFilter && hasBearerLiteral;
         });
     }

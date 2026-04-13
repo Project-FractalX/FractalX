@@ -86,11 +86,13 @@ class RegistryServiceClassGenerator {
                         });
                     }
 
+                    @SuppressWarnings("unchecked")
                     private boolean checkHealth(String healthUrl) {
                         if (healthUrl == null || healthUrl.isBlank()) return false;
                         try {
-                            String response = restTemplate.getForObject(healthUrl, String.class);
-                            return response != null && response.contains("UP");
+                            java.util.Map<String, Object> body =
+                                    restTemplate.getForObject(healthUrl, java.util.Map.class);
+                            return body != null && "UP".equalsIgnoreCase(String.valueOf(body.get("status")));
                         } catch (Exception e) {
                             return false;
                         }

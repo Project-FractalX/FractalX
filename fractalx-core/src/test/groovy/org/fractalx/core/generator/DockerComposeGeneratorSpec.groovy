@@ -142,7 +142,7 @@ class DockerComposeGeneratorSpec extends Specification {
         Files.exists(outputRoot.resolve("order-service/Dockerfile"))
     }
 
-    def "Dockerfile uses multi-stage build from maven:3.9-eclipse-temurin-17"() {
+    def "Dockerfile uses multi-stage build from maven:3.9-eclipse-temurin-21"() {
         given:
         Files.createDirectories(outputRoot.resolve("order-service"))
 
@@ -151,8 +151,8 @@ class DockerComposeGeneratorSpec extends Specification {
 
         then:
         def dockerfile = Files.readString(outputRoot.resolve("order-service/Dockerfile"))
-        dockerfile.contains("FROM maven:3.9-eclipse-temurin-17 AS build")
-        dockerfile.contains("FROM eclipse-temurin:17-jre-jammy")
+        dockerfile.contains("FROM maven:3.9-eclipse-temurin-21 AS build")
+        dockerfile.contains("FROM eclipse-temurin:21-jre-jammy")
         dockerfile.contains("RUN mvn -B dependency:resolve dependency:resolve-plugins")
         dockerfile.contains("RUN mvn -B package -DskipTests -q")
         dockerfile.contains("mkdir -p /app/logs && chown fractalx:fractalx /app/logs")

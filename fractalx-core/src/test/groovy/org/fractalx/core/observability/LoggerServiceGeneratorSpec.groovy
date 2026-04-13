@@ -96,7 +96,7 @@ class LoggerServiceGeneratorSpec extends Specification {
         generator.generate(outputRoot, FractalxConfig.defaults())
 
         then:
-        pom().contains("<java.version>17</java.version>")
+        pom().contains("<java.version>21</java.version>")
     }
 
     // -------------------------------------------------------------------------

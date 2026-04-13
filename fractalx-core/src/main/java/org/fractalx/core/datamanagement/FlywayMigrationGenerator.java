@@ -190,12 +190,14 @@ public class FlywayMigrationGenerator {
                         info.fields.add(new ColumnInfo(finalColName, embCol.sqlType, false));
                     }
                 } else {
-                    // Embeddable class not found in scanned sources — emit a placeholder comment
+                    // Embeddable class not found in scanned sources — do NOT emit invalid column names.
+                    // Record the missing type so a warning comment is emitted in the migration script.
                     info.embeddedNotFound.add(embeddedTypeName);
-                    info.fields.add(new ColumnInfo(
-                            toSnakeCase(field.getVariable(0).getNameAsString()) + "_TODO",
-                            "VARCHAR(255) /* @Embedded: expand " + embeddedTypeName + " fields manually */",
-                            false));
+                    String fieldName = field.getVariable(0).getNameAsString();
+                    log.warn("@Embedded field '{}' in entity '{}' references @Embeddable type '{}' "
+                                    + "which was not found in scanned sources — migration will contain "
+                                    + "a placeholder comment instead of columns. Expand manually in V1__init.sql.",
+                            fieldName, info.className, embeddedTypeName);
                 }
             } else if (hasAnnotation(field, "ManyToMany")) {
                 // Local @ManyToMany (same-service) → emit a join table.
@@ -309,12 +311,17 @@ public class FlywayMigrationGenerator {
         // Warn about @Embedded types that could not be inlined (embeddable not in scanned sources)
         boolean hasEmbeddedNotFound = entities.stream().anyMatch(e -> !e.embeddedNotFound.isEmpty());
         if (hasEmbeddedNotFound) {
-            sb.append("-- ─── @Embedded types not inlined automatically ──────────────────────────\n");
+            sb.append("-- ─── FIXME: @Embedded types not inlined ─────────────────────────────────\n");
+            sb.append("-- The following @Embeddable classes were not found in the scanned sources.\n");
+            sb.append("-- Their fields MUST be added to the tables below before this migration\n");
+            sb.append("-- can run. See DECOMPOSITION_HINTS.md for details.\n");
+            sb.append("--\n");
             for (EntityInfo entity : entities) {
                 for (String missing : entity.embeddedNotFound) {
-                    sb.append("-- TODO: Expand ").append(missing).append(" fields in table ")
-                      .append(entity.tableName).append(" manually.\n");
-                    sb.append("-- The @Embeddable class was not found in the scanned sources.\n");
+                    sb.append("-- ").append(entity.tableName).append(": expand @Embeddable '")
+                      .append(missing).append("' columns here.\n");
+                    sb.append("-- Example: ALTER TABLE ").append(entity.tableName)
+                      .append(" ADD COLUMN <field>_<subfield> <TYPE>;\n");
                 }
             }
             sb.append("\n");

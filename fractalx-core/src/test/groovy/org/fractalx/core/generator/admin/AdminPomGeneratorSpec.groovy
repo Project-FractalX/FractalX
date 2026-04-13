@@ -63,9 +63,9 @@ class AdminPomGeneratorSpec extends Specification {
 
         then:
         def c = pom()
-        c.contains("<java.version>17</java.version>")
-        c.contains("<maven.compiler.source>17</maven.compiler.source>")
-        c.contains("<maven.compiler.target>17</maven.compiler.target>")
+        c.contains("<java.version>21</java.version>")
+        c.contains("<maven.compiler.source>21</maven.compiler.source>")
+        c.contains("<maven.compiler.target>21</maven.compiler.target>")
     }
 
     // -------------------------------------------------------------------------

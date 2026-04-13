@@ -38,12 +38,12 @@ class RegistryPomGeneratorSpec extends Specification {
         pom().contains("<artifactId>fractalx-registry</artifactId>")
     }
 
-    def "pom.xml targets Java 17 and Spring Boot 3.2.0"() {
+    def "pom.xml targets Java 21 and Spring Boot 3.2.0"() {
         when:
         generator.generate(registryRoot, FractalxConfig.defaults())
 
         then:
-        pom().contains("<java.version>17</java.version>")
+        pom().contains("<java.version>21</java.version>")
         pom().contains("<spring-boot.version>3.2.0</spring-boot.version>")
     }
 

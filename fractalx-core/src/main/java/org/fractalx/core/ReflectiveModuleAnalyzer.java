@@ -3,6 +3,7 @@ package org.fractalx.core;
 import com.github.javaparser.JavaParser;
 import org.fractalx.annotations.DecomposableModule;
 import org.fractalx.core.model.FractalModule;
+import org.fractalx.core.naming.NameResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,6 +42,7 @@ public class ReflectiveModuleAnalyzer {
 
     private static final Logger log = LoggerFactory.getLogger(ReflectiveModuleAnalyzer.class);
     private final JavaParser javaParser = new JavaParser();
+    private final NameResolver nameResolver = NameResolver.defaults();
 
     /** Set during {@link #analyzeProject} so helper methods can load package-sibling classes. */
     private URLClassLoader moduleClassLoader;
@@ -241,9 +243,10 @@ public class ReflectiveModuleAnalyzer {
                           for (java.lang.reflect.Field f : c.getDeclaredFields()) {
                               try {
                                   String simple = f.getType().getSimpleName();
-                                  // Apply suffix heuristic to avoid treating entity/model fields
+                                  // Use configurable dependency type suffixes (default: Service, Client,
+                                  // Gateway, Bus, Processor) to avoid treating entity/model fields
                                   // (e.g. Customer inside Order) as cross-module service deps.
-                                  if ((simple.endsWith("Service") || simple.endsWith("Client"))
+                                  if (nameResolver.isDependencyType(simple)
                                           && !localTypes.contains(simple)) {
                                       deps.add(simple);
                                       log.debug("Field dep '{}' found in {}", simple, fqn);
@@ -279,7 +282,7 @@ public class ReflectiveModuleAnalyzer {
                               cu.findAll(com.github.javaparser.ast.body.FieldDeclaration.class)
                                 .forEach(field -> {
                                     String t = field.getCommonType().asString();
-                                    if ((t.endsWith("Service") || t.endsWith("Client"))
+                                    if (nameResolver.isDependencyType(t)
                                             && !localTypes.contains(t)) {
                                         deps.add(t);
                                         log.debug("Source field dep '{}' found in {}",
@@ -370,7 +373,14 @@ public class ReflectiveModuleAnalyzer {
                  "ApplicationEventPublisher", "Environment", "MessageSource" -> true;
             default -> raw.startsWith("java.") || raw.startsWith("jakarta.")
                     || raw.startsWith("org.springframework.")
-                    || raw.startsWith("io.") || raw.startsWith("com.fasterxml.");
+                    || raw.startsWith("com.fasterxml.")
+                    || raw.startsWith("io.micrometer.")
+                    || raw.startsWith("io.netty.")
+                    || raw.startsWith("io.grpc.")
+                    || raw.startsWith("io.projectreactor.")
+                    || raw.startsWith("io.opentelemetry.")
+                    || raw.startsWith("io.swagger.")
+                    || raw.startsWith("io.lettuce.");
         };
     }
 }

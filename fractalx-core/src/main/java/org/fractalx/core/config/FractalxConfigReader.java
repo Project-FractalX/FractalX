@@ -123,6 +123,18 @@ public class FractalxConfigReader {
                      "Set fractalx.base-package in fractalx-config.yml for correct namespacing.");
         }
 
+        String javaVersion = first(
+                leaf(fx, "java-version"),
+                appProps.getProperty("fractalx.java-version"),
+                pomInfo.javaVersion(),
+                defaults.javaVersion());
+
+        String initialServiceVersion = first(
+                leaf(fx, "initial-service-version"),
+                appProps.getProperty("fractalx.initial-service-version"),
+                pomInfo.version(),
+                defaults.initialServiceVersion());
+
         boolean springBootVersionFromConfig = first(
                 leaf(fx, "spring-boot-version"),
                 appProps.getProperty("fractalx.spring-boot-version"),
@@ -156,6 +168,14 @@ public class FractalxConfigReader {
         int sagaPort = firstInt(defaults.sagaPort(),
                 leaf(fx, "saga", "port"),
                 appProps.getProperty("fractalx.saga.port"));
+
+        Map<String, Object> otelMap = nestedMap(fx, "otel");
+        int jaegerUiPort = firstInt(defaults.jaegerUiPort(),
+                leaf(otelMap, "jaeger-ui-port"),
+                appProps.getProperty("fractalx.otel.jaeger-ui-port"));
+        int jaegerOtlpPort = firstInt(defaults.jaegerOtlpPort(),
+                leaf(otelMap, "jaeger-otlp-port"),
+                appProps.getProperty("fractalx.otel.jaeger-otlp-port"));
 
         // ── ResilienceDefaults ────────────────────────────────────────────────
 
@@ -191,7 +211,7 @@ public class FractalxConfigReader {
         // ── DockerImages ──────────────────────────────────────────────────────
 
         Map<String, Object> dockerMap = nestedMap(fx, "docker");
-        FractalxConfig.DockerImages di = FractalxConfig.DockerImages.defaults();
+        FractalxConfig.DockerImages di = FractalxConfig.DockerImages.defaults(javaVersion);
         FractalxConfig.DockerImages dockerImages = new FractalxConfig.DockerImages(
                 first(
                         leaf(dockerMap, "maven-build-image"),
@@ -243,12 +263,13 @@ public class FractalxConfigReader {
                 registryUrl, loggerUrl, otelEndpoint,
                 gatewayPort, corsOrigins, jwksUri,
                 adminPort, overrides,
-                basePackage, springBootVersion, springCloudVersion,
-                registryPort, loggerPort, sagaPort,
+                basePackage, javaVersion, initialServiceVersion,
+                springBootVersion, springCloudVersion,
+                registryPort, loggerPort, sagaPort, jaegerUiPort, jaegerOtlpPort,
                 resilience, dockerImages, features, naming);
 
-        log.info("[FractalxConfig] basePackage={} springBoot={} registry-port={} gateway-port={} admin-port={}",
-                cfg.effectiveBasePackage(), springBootVersion, registryPort, gatewayPort, adminPort);
+        log.info("[FractalxConfig] basePackage={} java={} springBoot={} registry-port={} gateway-port={} admin-port={}",
+                cfg.effectiveBasePackage(), javaVersion, springBootVersion, registryPort, gatewayPort, adminPort);
         return cfg;
     }
 
@@ -268,13 +289,17 @@ public class FractalxConfigReader {
             doc.getDocumentElement().normalize();
 
             String groupId            = firstElement(doc, "groupId");
+            String version            = firstElement(doc, "version");
+            String javaVersion        = first(
+                    pomProperty(doc, "java.version"),
+                    pomProperty(doc, "maven.compiler.source"));
             String springBootVersion  = pomProperty(doc, "spring-boot.version");
             if (springBootVersion == null) {
                 springBootVersion = parentVersionIfStarter(doc);
             }
             String springCloudVersion = dependencyVersion(doc, "spring-cloud-dependencies");
 
-            return new SourcePomInfo(groupId, springBootVersion, springCloudVersion);
+            return new SourcePomInfo(groupId, version, javaVersion, springBootVersion, springCloudVersion);
         } catch (Exception e) {
             log.warn("Could not parse source pom.xml at {} — groupId and Spring versions " +
                      "will fall back to defaults: {}", pomPath, e.getMessage());
@@ -351,8 +376,9 @@ public class FractalxConfigReader {
     }
 
     /** Holds values extracted from the monolith's pom.xml. All fields may be null. */
-    record SourcePomInfo(String groupId, String springBootVersion, String springCloudVersion) {
-        static SourcePomInfo empty() { return new SourcePomInfo(null, null, null); }
+    record SourcePomInfo(String groupId, String version, String javaVersion,
+                         String springBootVersion, String springCloudVersion) {
+        static SourcePomInfo empty() { return new SourcePomInfo(null, null, null, null, null); }
 
         /** Returns {@code groupId + ".generated"}, or null when groupId is unknown. */
         String basePackage() {

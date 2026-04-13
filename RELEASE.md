@@ -34,6 +34,26 @@ feature/plugin-api    ──┤──► develop ──► release/0.4.0 ──�
 fix/datasource-null   ──┘
 ```
 
+## Issue tracking during the release flow
+
+### When a fix PR is opened (e.g. `fix/#40 → develop`)
+
+1. Comment on each linked issue: *"Fixed in `develop` via PR #NNN — will close when `develop → main` is merged."*
+2. Apply the **`status: in develop`** label to each issue.
+3. Do **not** add `Closes #N` keywords to the `fix/* → develop` PR — GitHub only auto-closes issues when the PR merges into the default branch (`main`).
+
+### When a release PR is opened (`develop → main`)
+
+1. Include `Closes #N` for every issue being released in the PR body.
+2. Remove the **`status: in develop`** label from those issues.
+3. GitHub will auto-close all linked issues on merge.
+
+### Label reference
+
+| Label | Meaning |
+|-------|---------|
+| `status: in develop` | Fix merged into `develop`, not yet released to `main` |
+
 ## Guidelines
 
 - Use tags (e.g. `v0.3.2`) for release snapshots, not archive branches

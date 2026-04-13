@@ -35,3 +35,6 @@ generated-services/
 /fractalx-parent/.flattened-pom.xml
 /fractalx-initializr-core/.flattened-pom.xml
 /prompts/
+
+# Internal design docs
+/docs/internal/

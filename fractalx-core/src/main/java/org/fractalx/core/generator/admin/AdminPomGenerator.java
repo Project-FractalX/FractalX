@@ -25,17 +25,17 @@ class AdminPomGenerator {
 
                     <groupId>%s</groupId>
                     <artifactId>admin-service</artifactId>
-                    <version>1.0.0-SNAPSHOT</version>
+                    <version>%s</version>
                     <packaging>jar</packaging>
 
                     <name>FractalX Admin Service</name>
                     <description>Admin dashboard for FractalX microservices</description>
 
                     <properties>
-                        <java.version>17</java.version>
+                        <java.version>%s</java.version>
                         <spring-boot.version>%s</spring-boot.version>
-                        <maven.compiler.source>17</maven.compiler.source>
-                        <maven.compiler.target>17</maven.compiler.target>
+                        <maven.compiler.source>%s</maven.compiler.source>
+                        <maven.compiler.target>%s</maven.compiler.target>
                         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
                     </properties>
 
@@ -163,7 +163,7 @@ class AdminPomGenerator {
                         </plugins>
                     </build>
                 </project>
-                """.formatted(config.effectiveBasePackage(), config.springBootVersion(), FractalxVersion.get(),
+                """.formatted(config.effectiveBasePackage(), config.initialServiceVersion(), config.javaVersion(), config.springBootVersion(), config.javaVersion(), config.javaVersion(), FractalxVersion.get(),
                         SpringBootVersionUtil.isBoot4Plus(config.springBootVersion()) ? """
 
                             <exclusions>

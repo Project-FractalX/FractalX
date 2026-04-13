@@ -270,8 +270,17 @@ public class SagaMethodTransformer implements ServiceFileGenerator {
                 + "                }, () -> log.warn(\"onSagaFailed: " + aggregateName.toLowerCase() + " {} not found\", id));\n"
                 + "            }\n";
         } else {
-            confirmBlock = "            // TODO: finalize business state (e.g., mark " + aggregateName + " as CONFIRMED)\n";
-            cancelBlock  = "            // TODO: revert business state (e.g., mark " + aggregateName + " as CANCELLED)\n";
+            confirmBlock = "            // FIXME [FractalX]: aggregate ID field '" + idFieldName + "' was not found in saga params.\n"
+                    + "            //   Ensure the saga method takes '" + idFieldName + "' as a parameter,\n"
+                    + "            //   or annotate the aggregate's ID field with @Id.\n"
+                    + "            //   See DECOMPOSITION_HINTS.md for details.\n"
+                    + "            throw new UnsupportedOperationException(\"" + aggregateName
+                    + " saga-complete handler: aggregate ID field '" + idFieldName
+                    + "' not found — cannot finalize state. See DECOMPOSITION_HINTS.md.\");\n";
+            cancelBlock  = "            // FIXME [FractalX]: aggregate ID field '" + idFieldName + "' was not found in saga params.\n"
+                    + "            throw new UnsupportedOperationException(\"" + aggregateName
+                    + " saga-failed handler: aggregate ID field '" + idFieldName
+                    + "' not found — cannot revert state. See DECOMPOSITION_HINTS.md.\");\n";
         }
 
         // Only inject the repository when we have an ID field to look up.

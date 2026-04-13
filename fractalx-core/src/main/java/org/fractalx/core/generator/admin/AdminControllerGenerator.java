@@ -58,10 +58,12 @@ class AdminControllerGenerator {
                         return services;
                     }
 
+                    @SuppressWarnings("unchecked")
                     private boolean checkServiceHealth(String url) {
                         try {
-                            String resp = restTemplate.getForObject(url, String.class);
-                            return resp != null && resp.contains("UP");
+                            java.util.Map<String, Object> body =
+                                    restTemplate.getForObject(url, java.util.Map.class);
+                            return body != null && "UP".equalsIgnoreCase(String.valueOf(body.get("status")));
                         } catch (Exception e) {
                             return false;
                         }

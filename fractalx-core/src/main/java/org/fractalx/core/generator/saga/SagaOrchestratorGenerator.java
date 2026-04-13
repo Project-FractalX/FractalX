@@ -2,6 +2,7 @@ package org.fractalx.core.generator.saga;
 
 import org.fractalx.core.FractalxVersion;
 import org.fractalx.core.config.FractalxConfig;
+import org.fractalx.core.util.NamingUtils;
 import org.fractalx.core.util.SpringBootVersionUtil;
 import org.fractalx.core.datamanagement.DataReadmeGenerator;
 import org.fractalx.core.model.FractalModule;
@@ -146,15 +147,15 @@ public class SagaOrchestratorGenerator {
                     <modelVersion>4.0.0</modelVersion>
                     <groupId>__BASE_GROUP__</groupId>
                     <artifactId>fractalx-saga-orchestrator</artifactId>
-                    <version>1.0.0-SNAPSHOT</version>
+                    <version>__SVC_VERSION__</version>
                     <name>FractalX Saga Orchestrator</name>
                     <description>Auto-generated distributed saga orchestrator by FractalX</description>
 
                     <properties>
-                        <java.version>17</java.version>
+                        <java.version>__JAVA_VERSION__</java.version>
                         <spring-boot.version>__SB_VERSION__</spring-boot.version>
-                        <maven.compiler.source>17</maven.compiler.source>
-                        <maven.compiler.target>17</maven.compiler.target>
+                        <maven.compiler.source>__JAVA_VERSION__</maven.compiler.source>
+                        <maven.compiler.target>__JAVA_VERSION__</maven.compiler.target>
                         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
                     </properties>
 
@@ -241,6 +242,8 @@ public class SagaOrchestratorGenerator {
                 """);
         writeFile(serviceRoot, "pom.xml",
                 sb.toString()
+                        .replace("__SVC_VERSION__", config.initialServiceVersion())
+                        .replace("__JAVA_VERSION__", config.javaVersion())
                         .replace("__FX_VERSION__", FractalxVersion.get())
                         .replace("__BASE_GROUP__", config.effectiveBasePackage())
                         .replace("__SB_VERSION__", config.springBootVersion())
@@ -684,7 +687,7 @@ public class SagaOrchestratorGenerator {
         Set<String> injectedClients = new java.util.LinkedHashSet<>();
         for (SagaStep step : saga.getSteps()) {
             String clientType = step.getBeanType() + "Client";
-            String fieldName  = Character.toLowerCase(clientType.charAt(0)) + clientType.substring(1);
+            String fieldName  = NamingUtils.decapitalize(clientType);
             if (injectedClients.add(clientType)) {
                 sb.append("    private final ").append(clientType).append(" ").append(fieldName).append(";\n");
             }
@@ -707,7 +710,7 @@ public class SagaOrchestratorGenerator {
         Set<String> seenCtorTypes = new java.util.LinkedHashSet<>();
         for (SagaStep step : saga.getSteps()) {
             String clientType = step.getBeanType() + "Client";
-            String fieldName  = Character.toLowerCase(clientType.charAt(0)) + clientType.substring(1);
+            String fieldName  = NamingUtils.decapitalize(clientType);
             if (seenCtorTypes.add(clientType)) {
                 ctorParams.add(clientType + " " + fieldName);
             }
@@ -719,7 +722,7 @@ public class SagaOrchestratorGenerator {
         Set<String> assigned = new java.util.LinkedHashSet<>();
         for (SagaStep step : saga.getSteps()) {
             String clientType = step.getBeanType() + "Client";
-            String fieldName  = Character.toLowerCase(clientType.charAt(0)) + clientType.substring(1);
+            String fieldName  = NamingUtils.decapitalize(clientType);
             if (assigned.add(fieldName)) {
                 sb.append("        this.").append(fieldName).append(" = ").append(fieldName).append(";\n");
             }
@@ -784,8 +787,7 @@ public class SagaOrchestratorGenerator {
 
         for (int i = 0; i < saga.getSteps().size(); i++) {
             SagaStep step = saga.getSteps().get(i);
-            String clientField = Character.toLowerCase(step.getBeanType().charAt(0))
-                               + step.getBeanType().substring(1) + "Client";
+            String clientField = NamingUtils.decapitalize(step.getBeanType()) + "Client";
             String stepLabel = step.getTargetServiceName() + ":" + step.getMethodName();
             String callArgs = buildCallArgs(step.getCallArguments(), paramTypeMap, params);
 
@@ -844,8 +846,7 @@ public class SagaOrchestratorGenerator {
             // The "reversed" step at position i in reversed list is at index (size-1-i) in the original
             int originalIdx = stepsForComp.size() - 1 - i;
             if (step.hasCompensation()) {
-                String clientField = Character.toLowerCase(step.getBeanType().charAt(0))
-                                   + step.getBeanType().substring(1) + "Client";
+                String clientField = NamingUtils.decapitalize(step.getBeanType()) + "Client";
                 sb.append("        if (lastCompletedStep >= ").append(originalIdx).append(") {\n");
                 sb.append("            try {\n");
                 sb.append("                // Compensate step ").append(originalIdx).append(": ")
@@ -1041,6 +1042,16 @@ public class SagaOrchestratorGenerator {
         sb.append("        }\n");
         sb.append("    }\n\n");
 
+        // throwUnresolved helper — used by generated call-site args that could not be resolved
+        sb.append("    /** Throws at runtime for saga step parameters that could not be resolved during generation. */\n");
+        sb.append("    @SuppressWarnings(\"unchecked\")\n");
+        sb.append("    private static <T> T throwUnresolved(String arg) {\n");
+        sb.append("        throw new UnsupportedOperationException(\n");
+        sb.append("                \"Unresolved saga step parameter: '\" + arg + \"' — \"\n");
+        sb.append("                + \"FractalX could not map this expression to a payload accessor. \"\n");
+        sb.append("                + \"See DECOMPOSITION_HINTS.md for guidance.\");\n");
+        sb.append("    }\n\n");
+
         sb.append("}\n");
         return sb.toString();
     }
@@ -1098,7 +1109,10 @@ public class SagaOrchestratorGenerator {
                                   List<MethodParam> sagaParams) {
         if (callArgs.isEmpty()) {
             // No captured args — emit positional references to all saga params
-            if (sagaParams.isEmpty()) return "/* TODO: add parameters */";
+            if (sagaParams.isEmpty()) {
+                log.warn("Saga step has no resolvable parameters — generated code will throw at runtime. Add parameters to the saga method or supply a DecompositionHint.");
+                return "/* FIXME: no saga parameters resolved — add parameters to the saga method */";
+            }
             return sagaParams.stream()
                     .map(p -> "p." + p.getName() + "()")
                     .collect(java.util.stream.Collectors.joining(", "));
@@ -1121,15 +1135,16 @@ public class SagaOrchestratorGenerator {
                     int lastGet = varPart.lastIndexOf(".get");
                     String getterPart = varPart.substring(lastGet + 4); // after ".get"
                     getterPart = getterPart.replace("()", ""); // remove ()
-                    String nestedVar = Character.toLowerCase(getterPart.charAt(0)) + getterPart.substring(1);
+                    String nestedVar = NamingUtils.decapitalize(getterPart);
                     // Try "customerId" as a param
                     String idParam = nestedVar + "Id";
                     if (paramTypeMap.containsKey(idParam)) {
                         resolvedArgs.add("p." + idParam + "()");
                         continue;
                     }
-                    // Fall back: keep nestedVar + ".getId()" won't work; emit TODO
-                    resolvedArgs.add("/* TODO: resolve " + arg + " */ null");
+                    // Fall back: unresolvable chained accessor — fail fast at runtime
+                    log.warn("Saga step argument '{}' could not be resolved to a payload accessor", arg);
+                    resolvedArgs.add("throwUnresolved(\"" + arg.replace("\"", "\\\"") + "\")");
                 } else {
                     // Simple: "order.getId()" → orderId
                     String entityVarName = varPart;
@@ -1140,8 +1155,9 @@ public class SagaOrchestratorGenerator {
                         // param is "order" itself (less common)
                         resolvedArgs.add("p." + entityVarName + "()");
                     } else {
-                        // No match — emit a TODO comment so code at least compiles as a String stub
-                        resolvedArgs.add("/* TODO: resolve " + arg + " */ null");
+                        // No match — fail fast at runtime rather than passing null silently
+                        log.warn("Saga step argument '{}' could not be resolved to a payload accessor", arg);
+                        resolvedArgs.add("throwUnresolved(\"" + arg.replace("\"", "\\\"") + "\")");
                     }
                 }
             } else if (isNumericLiteral(arg) || "true".equals(arg) || "false".equals(arg) || "null".equals(arg)) {
@@ -1149,8 +1165,9 @@ public class SagaOrchestratorGenerator {
                 resolvedArgs.add(arg);
             } else {
                 // Unknown expression — cannot be resolved in the orchestrator's scope.
-                // Replace with null and leave a TODO comment for the developer.
-                resolvedArgs.add("/* TODO: was '" + arg.replace("*/", "* /") + "' */ null");
+                // Fail fast at runtime so the developer is forced to resolve it.
+                log.warn("Saga step argument '{}' is an unknown expression that cannot be resolved in the orchestrator scope", arg);
+                resolvedArgs.add("throwUnresolved(\"" + arg.replace("\"", "\\\"").replace("*/", "* /") + "\")");
             }
         }
         return String.join(", ", resolvedArgs);
@@ -1354,8 +1371,7 @@ public class SagaOrchestratorGenerator {
                 """);
 
         for (SagaDefinition saga : sagas) {
-            String svcField = Character.toLowerCase(saga.toClassName().charAt(0))
-                            + saga.toClassName().substring(1) + "SagaService";
+            String svcField = NamingUtils.decapitalize(saga.toClassName()) + "SagaService";
             sb.append("    private final ").append(saga.toClassName()).append("SagaService ")
               .append(svcField).append(";\n");
         }
@@ -1366,15 +1382,13 @@ public class SagaOrchestratorGenerator {
         List<String> params = new ArrayList<>();
         for (SagaDefinition saga : sagas) {
             String svcType  = saga.toClassName() + "SagaService";
-            String svcField = Character.toLowerCase(saga.toClassName().charAt(0))
-                            + saga.toClassName().substring(1) + "SagaService";
+            String svcField = NamingUtils.decapitalize(saga.toClassName()) + "SagaService";
             params.add(svcType + " " + svcField);
         }
         params.add("SagaInstanceRepository sagaRepository");
         sb.append(String.join(", ", params)).append(") {\n");
         for (SagaDefinition saga : sagas) {
-            String svcField = Character.toLowerCase(saga.toClassName().charAt(0))
-                            + saga.toClassName().substring(1) + "SagaService";
+            String svcField = NamingUtils.decapitalize(saga.toClassName()) + "SagaService";
             sb.append("        this.").append(svcField).append(" = ").append(svcField).append(";\n");
         }
         sb.append("        this.sagaRepository = sagaRepository;\n");
@@ -1382,8 +1396,7 @@ public class SagaOrchestratorGenerator {
 
         // Per-saga start endpoint
         for (SagaDefinition saga : sagas) {
-            String svcField = Character.toLowerCase(saga.toClassName().charAt(0))
-                            + saga.toClassName().substring(1) + "SagaService";
+            String svcField = NamingUtils.decapitalize(saga.toClassName()) + "SagaService";
             sb.append("    /** Start '").append(saga.getSagaId()).append("' saga. */\n");
             sb.append("    @PostMapping(\"/").append(saga.getSagaId()).append("/start\")\n");
             sb.append("    public ResponseEntity<Map<String, String>> start").append(saga.toClassName())
