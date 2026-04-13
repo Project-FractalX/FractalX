@@ -147,22 +147,44 @@ In under a minute you have:
 
 ## 2. How It Works
 
-FractalX is a **multi-module framework** composed of a core decomposition engine, an annotations library, a runtime support library, a Spring Initializr integration, and a Maven plugin as the invocation layer. It reads your monolith's source tree with JavaParser, identifies bounded contexts from `@DecomposableModule` annotations, and generates everything needed to run those contexts as independent Spring Boot services.
+FractalX is a **multi-module framework** composed of a core decomposition engine, an annotations library, a runtime support library, a Spring Initializr integration, and a Maven plugin as the invocation layer. It reads your monolith's source tree with JavaParser, constructs a deterministic dependency graph, and generates everything needed to run your bounded contexts as independent Spring Boot services.
 
-### Two-phase AST analysis
+### Three-layer deterministic architecture
+
+FractalX enforces a strict three-layer pipeline. No layer reaches into a higher layer's concerns.
 
 ```
-Phase 1: Parse all .java files into a Map<Path, CompilationUnit>
-Phase 2: For each @DecomposableModule, identify its package prefix,
-         scan all files in that prefix, collect imports that reference
-         another module's package -- those become cross-module calls
+Layer 1 — Graph Construction (deterministic)
+  GraphBuilder performs a two-phase AST walk over all source files:
+    Phase 1: collect all class/interface nodes with their annotations,
+             implemented interfaces, superclass, and method metadata
+    Phase 2: resolve typed edges — FIELD_REFERENCE, METHOD_CALL,
+             EXTENDS, IMPLEMENTS — from actual AST type resolution,
+             not name matching. Zero heuristics.
+  Output: DependencyGraph — a single queryable structural model of
+          the entire monolith. All downstream logic consumes this graph.
+
+Layer 2 — Decomposition Rules (deterministic)
+  Graph partitioning from @DecomposableModule boundary declarations.
+  Cross-module dependency detection uses Spring stereotype annotations
+  (@Service, @Component, @Repository, @Controller) indexed from the
+  graph — never class name suffixes. Transaction boundary detection uses
+  @NetScopeClient structural markers. Auth detection uses graph queries
+  (nodesWithAnnotation, nodesWithMethodCall, callArgumentsFor).
+
+Layer 3 — Code Generation (technology-specific)
+  ServiceGenerator pipeline consumes the graph and module boundaries
+  to emit Spring Boot services, gateway, registry, sagas, and infra.
+  This is the only layer that knows about Spring Boot, Docker, etc.
 ```
 
-Cross-module dependencies are detected **automatically** from Spring field injection and import statements -- no explicit declaration required.
+Cross-module dependencies are detected **automatically** from Spring stereotype annotations and field injection — no explicit declaration required.
 
 ### Generation pipeline (per service)
 
 ```
+GraphBuilder                  -> DependencyGraph (nodes + typed edges from full AST walk)
+ModuleAnalyzer                -> FractalModule boundaries from @DecomposableModule + graph
 PomGenerator                  -> pom.xml (netscope-server, netscope-client, resilience4j)
 ApplicationGenerator          -> Main class (@EnableNetScopeServer, @EnableNetScopeClient)
 ConfigurationGenerator        -> application.yml + application-dev.yml + application-docker.yml
@@ -206,7 +228,7 @@ DockerComposeGenerator     -> docker-compose.yml + multi-stage Dockerfiles
                             v
 +---------------------------------------------------------------------+
 |                    FractalX Code Generator                          |
-|  ModuleAnalyzer -> ServiceGenerator pipeline -> GatewayGenerator   |
+|  GraphBuilder -> DependencyGraph -> ServiceGenerator -> Gateway     |
 +---------------------------+-----------------------------------------+
                             |  Generated output
                             v
@@ -373,25 +395,25 @@ FractalX detects which beans a module imports from other modules in two ways:
 public class LeaveModule {}
 ```
 
-**Heuristic fallback** -- when `dependencies` is omitted, FractalX scans all `.java` files in the
-module's package and infers cross-module deps from field types whose name ends in `Service` or
-`Client`. A `WARN` is logged for each inferred dependency:
+**Annotation-based inference** -- when `dependencies` is omitted, FractalX builds a Spring stereotype
+index from the parsed source tree. Any field type annotated with `@Service`, `@Component`,
+`@Repository`, `@Controller`, `@RestController`, or `@Configuration` that is injected into a
+`@DecomposableModule` class is treated as a cross-module dependency. This is fully deterministic —
+no name-suffix matching. A `WARN` is logged for each inferred dependency:
 ```
-[WARN] Module 'leave-service': dependencies inferred by type-suffix heuristic
+[WARN] Module 'leave-service': dependencies inferred by Spring annotation index
        ([EmployeeService, DepartmentService]). Declare them explicitly with
-       @DecomposableModule(dependencies={...}) for reliability.
+       @DecomposableModule(dependencies={...}) for guaranteed coverage.
 ```
 
 **Lombok `@RequiredArgsConstructor` / `@AllArgsConstructor`** -- when a class carries one of these
 Lombok annotations, FractalX also scans all `private final` fields as potential cross-module
-dependencies (not just those ending in `Service` / `Client`). This covers non-standard naming
-conventions like `NotificationGateway`, `PaymentFacade`, or `AuditSink`. JDK and Spring types
-(`String`, `RestTemplate`, `ApplicationEventPublisher`, etc.) are filtered out automatically.
+dependencies. This covers non-standard naming conventions like `NotificationGateway`,
+`PaymentFacade`, or `AuditSink`. JDK and Spring framework types are filtered out automatically.
 
-> **Always use explicit `dependencies=`** for any monolith where cross-module bean names do not
-> follow the `*Service` / `*Client` suffix convention. The heuristic will silently miss beans
-> named `PaymentProcessor`, `OrderFacade`, `InventoryManager`, etc. (unless Lombok constructors
-> are in use -- see above).
+> **Always use explicit `dependencies=`** for any monolith where cross-module beans are not
+> annotated with standard Spring stereotypes. Programmatically registered beans, or types loaded
+> via reflection, are not visible to static analysis.
 >
 > Explicit declaration also drives the dependency graph in `fractalx:verify` -- without it, all
 > services will show `⚠ ORPHAN` warnings from the graph analyser.
@@ -696,13 +718,13 @@ class imported without a local copy -- are flagged.
 
 **Dependency graph / orphan check (Level 4)**
 
-The graph is built by matching the simple class name of each declared dependency (e.g.
-`PaymentService`) against the class names of all other modules. The check requires that the
-framework knows which module a bean belongs to. When `dependencies=` is declared explicitly in
-`@DecomposableModule`, the mapping is exact. When the heuristic fallback is used (types ending in
-`Service` / `Client`), the match still works as long as each service has a unique class name.
-Orphan warnings mean the graph analyser could not build an edge -- most often because explicit
-`dependencies=` are missing (see [Cross-module dependency detection](#cross-module-dependency-detection)).
+The graph is built from `DependencyGraph` structural edges — `FIELD_REFERENCE` edges from
+`@DecomposableModule` classes to their injected dependencies, resolved from the fully-typed AST.
+When `dependencies=` is declared explicitly in `@DecomposableModule`, the mapping is exact.
+When omitted, the Spring annotation index (types annotated `@Service`, `@Component`, etc.)
+provides the inference — no name-suffix matching. Orphan warnings mean the graph analyser could
+not build an edge, most often because a dependency bean is not annotated with a Spring stereotype
+and is not declared explicitly (see [Cross-module dependency detection](#cross-module-dependency-detection)).
 
 **Secret scanner (Level 4)**
 
@@ -2010,12 +2032,14 @@ FractalX scans source code with JavaParser. Patterns that only manifest at runti
 beans registered programmatically — are not detected. Cross-module calls made through these
 mechanisms are silently absent from the generated NetScope clients.
 
-**Field injection assumed for dependency detection**
-`ModuleAnalyzer` identifies cross-module dependencies from `@Autowired` / `@Inject` fields and
-Lombok `@RequiredArgsConstructor` / `@AllArgsConstructor` constructor injection. Method-level
-injection (`@Autowired` on a setter), bean factory methods, or constructor injection without
-Lombok annotations may be missed. Always review the generated `*Client` interfaces against your
-actual dependency graph.
+**Field injection and Spring stereotype annotations required for inference**
+`ModuleAnalyzer` identifies cross-module dependencies from `@Autowired` / `@Inject` fields,
+Lombok `@RequiredArgsConstructor` / `@AllArgsConstructor` constructor injection, and Spring
+stereotype annotations (`@Service`, `@Component`, `@Repository`, etc.) on the injected types.
+Method-level injection (`@Autowired` on a setter), bean factory methods, or constructor injection
+without Lombok annotations may be missed. Programmatically registered beans and reflection-based
+service location are invisible to static analysis. Always review the generated `*Client` interfaces
+against your actual dependency graph, or declare dependencies explicitly with `dependencies=`.
 
 **Wildcard and static imports not resolved by `SharedCodeCopier`**
 `SharedCodeCopier` resolves shared classes by tracing explicit single-type imports
