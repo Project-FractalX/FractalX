@@ -480,8 +480,15 @@ public class FractalxConfigReader {
                 Object dsP = dsMap.get("password"); if (dsP != null) dsPassword = dsP.toString();
                 Object dsD = dsMap.get("driver-class-name"); if (dsD != null) dsDriver = dsD.toString();
             }
+            Boolean flywayEnabled = null;   // null = inherit project-level distributed-data default
+            Object flywayObj = svc.get("flyway");
+            if (flywayObj instanceof Map<?, ?> flywayMap) {
+                Object enabledVal = flywayMap.get("enabled");
+                if (enabledVal instanceof Boolean b) flywayEnabled = b;
+                else if (enabledVal != null) flywayEnabled = !"false".equalsIgnoreCase(String.valueOf(enabledVal));
+            }
             result.put(name, new FractalxConfig.ServiceOverride(port, tracingEnabled,
-                    dsUrl, dsUsername, dsPassword, dsDriver));
+                    dsUrl, dsUsername, dsPassword, dsDriver, flywayEnabled));
         });
         return result;
     }

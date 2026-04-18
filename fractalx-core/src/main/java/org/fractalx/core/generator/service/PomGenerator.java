@@ -134,7 +134,7 @@ public class PomGenerator implements ServiceFileGenerator {
             if (isBoot4Plus) removeDependencyByArtifact(doc, "spring-boot-starter-aop");
             pruneAndResolveUnusedDeps(doc, module.getDetectedImports(), monolithProps,
                     module.getServiceName());
-            addFractalxDeps(doc, cfg.springBootVersion());
+            addFractalxDeps(doc, cfg, module.getServiceName());
             addTransactionSupportIfNeeded(doc, module.getDetectedImports());
             if (cfg.features().observability()) {
                 appendObservabilityDeps(doc);
@@ -207,6 +207,18 @@ public class PomGenerator implements ServiceFileGenerator {
                             <version>%s</version>
                         </dependency>
                 """.formatted(FRACTALX_RUNTIME_VERSION);
+
+        // flyway-core included only when flyway is enabled for this service
+        FractalxConfig.ServiceOverride scratchOverride = cfg.serviceOverrides().get(module.getServiceName());
+        boolean scratchFlyway = scratchOverride != null
+                ? scratchOverride.effectiveFlyway(cfg.features().distributedData())
+                : cfg.features().distributedData();
+        String flywayDep = scratchFlyway ? """
+                        <dependency>
+                            <groupId>org.flywaydb</groupId>
+                            <artifactId>flyway-core</artifactId>
+                        </dependency>
+                """ : "";
 
         // For Boot 4.x: ObservabilityInjector includes pinned OTel SDK versions (1.32.0) that are
         // binary-incompatible with Boot 4.x managed versions. Use only the version-managed deps.
@@ -291,7 +303,7 @@ public class PomGenerator implements ServiceFileGenerator {
                             <artifactId>resilience4j-spring-boot3</artifactId>
                             <version>%s</version>
                         </dependency>
-                        %s%s
+                        %s%s%s
                         <!-- ── Observability (OTel tracing) ─────────────────── -->
                 %s
                     </dependencies>
@@ -337,6 +349,7 @@ public class PomGenerator implements ServiceFileGenerator {
                 RESILIENCE4J_VERSION,
                 aopDep,
                 cloudContextDep,
+                flywayDep,
                 observabilityDeps
         );
     }
@@ -483,8 +496,8 @@ public class PomGenerator implements ServiceFileGenerator {
      * Each call to {@link #addDepIfAbsent} is a no-op if the dep is already present
      * (copied from monolith or previously added).
      */
-    private void addFractalxDeps(Document doc, String springBootVersion) {
-        boolean isBoot4Plus = SpringBootVersionUtil.isBoot4Plus(springBootVersion);
+    private void addFractalxDeps(Document doc, FractalxConfig cfg, String serviceName) {
+        boolean isBoot4Plus = SpringBootVersionUtil.isBoot4Plus(cfg.springBootVersion());
         Element depsEl = ensureDependenciesElement(doc);
         addDepIfAbsent(doc, depsEl, "org.springframework.boot",  "spring-boot-starter-web",        null,                    null);
         addDepIfAbsent(doc, depsEl, "org.springframework.boot",  "spring-boot-starter-validation", null,                    null);
@@ -509,6 +522,16 @@ public class PomGenerator implements ServiceFileGenerator {
             addExclusionToDep(doc, "fractalx-runtime", "org.springframework.cloud", "spring-cloud-commons");
         }
         addDepIfAbsent(doc, depsEl, "io.github.resilience4j",    "resilience4j-spring-boot3",     RESILIENCE4J_VERSION,    null);
+        // flyway-core is added only when Flyway is enabled for this service (project-level
+        // distributed-data flag, overridable per service). This guarantees the YAML
+        // flyway.enabled: true and the classpath dependency are always in sync.
+        FractalxConfig.ServiceOverride override = cfg.serviceOverrides().get(serviceName);
+        boolean flyway = override != null
+                ? override.effectiveFlyway(cfg.features().distributedData())
+                : cfg.features().distributedData();
+        if (flyway) {
+            addDepIfAbsent(doc, depsEl, "org.flywaydb", "flyway-core", null, null);
+        }
     }
 
     /**
