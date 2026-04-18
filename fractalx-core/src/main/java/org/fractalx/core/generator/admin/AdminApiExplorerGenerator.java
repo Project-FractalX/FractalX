@@ -119,7 +119,7 @@ class AdminApiExplorerGenerator {
 
                         HttpHeaders headers = new HttpHeaders();
                         headerMap.forEach(headers::set);
-                        if (!headers.containsHeader(HttpHeaders.CONTENT_TYPE) && body != null && !body.isBlank())
+                        if (headers.getFirst(HttpHeaders.CONTENT_TYPE) == null && body != null && !body.isBlank())
                             headers.setContentType(MediaType.APPLICATION_JSON);
 
                         HttpEntity<String> entity = new HttpEntity<>(body, headers);

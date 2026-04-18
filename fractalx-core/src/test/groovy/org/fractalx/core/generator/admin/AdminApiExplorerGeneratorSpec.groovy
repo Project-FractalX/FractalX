@@ -169,6 +169,16 @@ class AdminApiExplorerGeneratorSpec extends Specification {
         c.contains("10_000") || c.contains("10000")
     }
 
+    def "ApiExplorerController uses version-safe header check (no containsHeader)"() {
+        when:
+        generator.generate(srcMainJava, basePackage, [order])
+
+        then:
+        def c = readController()
+        !c.contains("containsHeader")
+        c.contains("getFirst")
+    }
+
     def "generator works with multiple modules"() {
         when:
         generator.generate(srcMainJava, basePackage, [order, payment])
