@@ -98,10 +98,19 @@ public record FractalxConfig(
     /** Per-service overrides read from fractalx-config.yml. */
     public record ServiceOverride(int port, boolean tracingEnabled,
                                   String datasourceUrl, String datasourceUsername,
-                                  String datasourcePassword, String datasourceDriver) {
+                                  String datasourcePassword, String datasourceDriver,
+                                  Boolean flywayEnabled) {
         public boolean hasPort() { return port > 0; }
         public boolean hasDatasource() { return datasourceUrl != null && !datasourceUrl.isBlank(); }
         public boolean isH2() { return datasourceUrl != null && datasourceUrl.startsWith("jdbc:h2"); }
+        /**
+         * Resolves the effective Flyway flag for this service.
+         * Returns the per-service override when explicitly set; falls back to the
+         * project-level {@code features.distributed-data} default otherwise.
+         */
+        public boolean effectiveFlyway(boolean projectDefault) {
+            return flywayEnabled != null ? flywayEnabled : projectDefault;
+        }
     }
 
     /** Resilience4j circuit-breaker / retry / timeout defaults for generated services. */

@@ -42,7 +42,7 @@ public class ConfigurationGenerator implements ServiceFileGenerator {
 
         // Docker profile
         Files.writeString(context.getSrcMainResources().resolve("application-docker.yml"),
-                buildDockerYml(module, context.getAllModules(), monolithDs));
+                buildDockerYml(module, context.getAllModules(), context.getFractalxConfig(), monolithDs));
     }
 
     // -------------------------------------------------------------------------
@@ -131,6 +131,8 @@ public class ConfigurationGenerator implements ServiceFileGenerator {
     private String buildDevYml(FractalModule module, List<FractalModule> allModules,
                                 org.fractalx.core.config.FractalxConfig cfg,
                                 Map<String, Object> monolithDs) {
+        boolean flyway = effectiveFlyway(cfg, module.getServiceName());
+
         if (monolithDs != null) {
             // Use the datasource specified in the monolith's fractalx-config.yml
             String url      = (String) monolithDs.getOrDefault("url", "jdbc:h2:mem:" + module.getServiceName().replace("-", "_"));
@@ -141,6 +143,12 @@ public class ConfigurationGenerator implements ServiceFileGenerator {
             String password = monolithDs.containsKey("password") && monolithDs.get("password") != null
                     ? String.valueOf(monolithDs.get("password")) : "";
             log.info("  [Config] Using monolith datasource for {} dev profile: {}", module.getServiceName(), url);
+            // When Flyway manages the schema ddl-auto must be validate; without Flyway use update
+            // so Hibernate keeps the schema in sync without requiring migration scripts.
+            String ddlAuto     = flyway ? "validate" : "update";
+            String flywayBlock = flyway
+                    ? "  flyway:\n    enabled: true\n    locations: classpath:db/migration\n"
+                    : "";
             return """
                     # Dev profile — datasource from fractalx-config.yml
                     spring:
@@ -156,20 +164,20 @@ public class ConfigurationGenerator implements ServiceFileGenerator {
                           idle-timeout: 600000
                       jpa:
                         hibernate:
-                          ddl-auto: validate
+                          ddl-auto: %s
                         show-sql: false
                         properties:
                           hibernate:
                             format_sql: false
-                      flyway:
-                        enabled: true
-                        locations: classpath:db/migration
-                    %s
-                    """.formatted(url, driver, username, password,
-                    buildClientServersConfig(module, allModules));
+                    %s%s
+                    """.formatted(url, driver, username, password, ddlAuto,
+                    flywayBlock, buildClientServersConfig(module, allModules));
         }
 
         // Default: H2 in-memory
+        String flywayBlock = flyway
+                ? "  flyway:\n    enabled: true\n    locations: classpath:db/migration\n"
+                : "";
         return """
                 # Dev profile — all services run on localhost
                 spring:
@@ -193,18 +201,16 @@ public class ConfigurationGenerator implements ServiceFileGenerator {
                   h2:
                     console:
                       enabled: true
-                  flyway:
-                    enabled: true
-                    locations: classpath:db/migration
-                %s
+                %s%s
                 """.formatted(
                 module.getServiceName().replace("-", "_"),
-                buildClientServersConfig(module, allModules)
+                flywayBlock, buildClientServersConfig(module, allModules)
         );
     }
 
     /** application-docker.yml — all values driven by env vars, no hardcoded localhost. */
     private String buildDockerYml(FractalModule module, List<FractalModule> allModules,
+                                   org.fractalx.core.config.FractalxConfig cfg,
                                    Map<String, Object> monolithDs) {
         StringBuilder sb = new StringBuilder("# Docker profile — all values from environment variables\n");
         sb.append("spring:\n");
@@ -226,9 +232,11 @@ public class ConfigurationGenerator implements ServiceFileGenerator {
             sb.append("    username: ${DB_USERNAME:sa}\n");
             sb.append("    password: ${DB_PASSWORD:}\n");
         }
-        sb.append("  flyway:\n");
-        sb.append("    enabled: true\n");
-        sb.append("    locations: classpath:db/migration\n");
+        if (effectiveFlyway(cfg, module.getServiceName())) {
+            sb.append("  flyway:\n");
+            sb.append("    enabled: true\n");
+            sb.append("    locations: classpath:db/migration\n");
+        }
         sb.append("fractalx:\n");
         sb.append("  observability:\n");
         sb.append("    otel:\n");
@@ -318,6 +326,19 @@ public class ConfigurationGenerator implements ServiceFileGenerator {
     private String buildYml(FractalModule module, List<FractalModule> allModules) {
         // kept for backward-compat — not called by generate() anymore
         return buildBaseYml(module, org.fractalx.core.config.FractalxConfig.defaults());
+    }
+
+    /**
+     * Resolves whether Flyway should be enabled for the given service.
+     * A per-service {@code flyway.enabled} override takes precedence; when absent
+     * the project-level {@code features.distributed-data} flag is used as the default.
+     */
+    private static boolean effectiveFlyway(org.fractalx.core.config.FractalxConfig cfg, String serviceName) {
+        org.fractalx.core.config.FractalxConfig.ServiceOverride override =
+                cfg.serviceOverrides().get(serviceName);
+        return override != null
+                ? override.effectiveFlyway(cfg.features().distributedData())
+                : cfg.features().distributedData();
     }
 
     /**
