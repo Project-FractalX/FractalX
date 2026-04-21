@@ -131,25 +131,34 @@ public class SagaMethodTransformer implements ServiceFileGenerator {
                     .append(saga.getMethodName()).append("()</li>\n");
         }
 
-        // Derive the aggregate repository from the first saga's owner class name.
-        // Heuristic: "OrderService" → aggregate "Order" → repository "OrderRepository"
-        //            "OrderModule"  → aggregate "Order" → repository "OrderRepository"
+        // Derive the aggregate name from the owner class (used as fallback for repository naming
+        // and as the basis for ID field resolution).
         String ownerClass = sagas.get(0).getOwnerClassName(); // e.g. "OrderService" or "OrderModule"
         String aggregateName = ownerClass.endsWith("Service")
                 ? ownerClass.substring(0, ownerClass.length() - "Service".length())
                 : ownerClass.endsWith("Module")
                     ? ownerClass.substring(0, ownerClass.length() - "Module".length())
                     : ownerClass;
-        String repositoryType = aggregateName + "Repository"; // e.g. "OrderRepository"
-        String repositoryFqn  = modulePackage + "." + repositoryType;
-        String repoField      = Character.toLowerCase(repositoryType.charAt(0)) + repositoryType.substring(1);
 
-        // Look for the aggregate ID field name in any saga's params or extra local vars.
-        // e.g. "orderId" in place-order-saga's extraLocalVars.
-        String idFieldName = aggregateName.toLowerCase() + "Id"; // e.g. "orderId"
-        boolean hasIdField = sagas.stream().anyMatch(s ->
-                s.getSagaMethodParams().stream().anyMatch(p -> p.getName().equals(idFieldName))
-                || s.getExtraLocalVars().stream().anyMatch(p -> p.getName().equals(idFieldName)));
+        // Resolve the repository type by scanning the owner class source file for injected
+        // *Repository fields. This is more reliable than name-based heuristics when the
+        // aggregate name differs from the module/service name (e.g. RecruitmentModule → CandidateRepository).
+        String[] repoResolved = resolveRepositoryFromSource(monolithSourceRoot, ownerClass, modulePackage);
+        String repositoryType = repoResolved[0]; // e.g. "CandidateRepository"
+        String repositoryFqn  = repoResolved[1]; // e.g. "com.example.recruitment.CandidateRepository"
+        String repoField      = repoResolved[2]; // e.g. "candidateRepository"
+
+        // Derive the entity name from the resolved repository type so ID resolution uses
+        // the actual entity (e.g. "CandidateRepository" → "Candidate") rather than the
+        // owner class name (e.g. "RecruitmentModule" → "Recruitment").
+        String entityName = repositoryType.endsWith("Repository")
+                ? repositoryType.substring(0, repositoryType.length() - "Repository".length())
+                : aggregateName;
+
+        // Resolve the aggregate ID field name using a multi-strategy fallback chain.
+        String resolvedIdField = resolveAggregateIdField(sagas, aggregateName, entityName);
+        String idFieldName = resolvedIdField != null ? resolvedIdField : aggregateName.toLowerCase() + "Id";
+        boolean hasIdField  = resolvedIdField != null;
 
         String pkg = basePackage + ".saga";
         Path pkgPath = srcMainJava;
@@ -341,7 +350,7 @@ public class SagaMethodTransformer implements ServiceFileGenerator {
                 + "                    payload, new TypeReference<Map<String, Object>>() {});\n"
                 + "            log.info(\"Saga completed — correlationId={} payload={}\", cid, sagaData);\n"
                 + confirmBlock
-                + "            return ResponseEntity.ok().build();\n"
+                + (hasIdField ? "            return ResponseEntity.ok().build();\n" : "")
                 + "        } catch (Exception e) {\n"
                 + "            log.error(\"Failed to process saga completion: correlationId={}\", cid, e);\n"
                 + "            return ResponseEntity.internalServerError().build();\n"
@@ -364,7 +373,7 @@ public class SagaMethodTransformer implements ServiceFileGenerator {
                 + "            String errorMessage = (String) errorData.getOrDefault(\"errorMessage\", \"unknown\");\n"
                 + "            log.warn(\"Saga FAILED — correlationId={} error={}\", cid, errorMessage);\n"
                 + cancelBlock
-                + "            return ResponseEntity.ok().build();\n"
+                + (hasIdField ? "            return ResponseEntity.ok().build();\n" : "")
                 + "        } catch (Exception e) {\n"
                 + "            log.error(\"Failed to process saga failure notification: correlationId={}\", cid, e);\n"
                 + "            return ResponseEntity.internalServerError().build();\n"
@@ -853,6 +862,145 @@ public class SagaMethodTransformer implements ServiceFileGenerator {
             if (available.contains(candidate)) return candidate;
         }
         return null;
+    }
+
+    // -------------------------------------------------------------------------
+    // Repository resolution
+    // -------------------------------------------------------------------------
+
+    /**
+     * Resolves the repository type, FQN, and field name for a saga's owner class by scanning its
+     * source file for injected {@code *Repository} fields. Falls back to the
+     * {@code <aggregateName>Repository} naming convention when the source is unavailable.
+     *
+     * @return {@code String[3]} — {@code [repositoryType, repositoryFqn, repoFieldName]}
+     */
+    private String[] resolveRepositoryFromSource(Path monolithSourceRoot, String ownerClassName,
+                                                  String modulePackage) {
+        try {
+            Path ownerFile = findClassFile(monolithSourceRoot, ownerClassName);
+            if (ownerFile != null) {
+                CompilationUnit cu = javaParser.parse(ownerFile).getResult().orElse(null);
+                if (cu != null) {
+                    for (com.github.javaparser.ast.body.ClassOrInterfaceDeclaration cls
+                            : cu.findAll(com.github.javaparser.ast.body.ClassOrInterfaceDeclaration.class)) {
+                        for (FieldDeclaration field : cls.getFields()) {
+                            String typeName = field.getElementType().asString();
+                            if (typeName.endsWith("Repository")) {
+                                String fieldName = field.getVariables().get(0).getNameAsString();
+                                // Derive the FQN from the module package; the repository lives
+                                // in the same package as the owner class.
+                                String fqn = modulePackage + "." + typeName;
+                                log.debug("SagaMethodTransformer: resolved repository '{}' from "
+                                        + "source field in {}", typeName, ownerClassName);
+                                return new String[]{typeName, fqn, fieldName};
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("SagaMethodTransformer: could not scan {} for repository fields — "
+                    + "falling back to name heuristic ({})", ownerClassName, e.getMessage());
+        }
+
+        // Fallback: strip "Service"/"Module" suffix and append "Repository"
+        String aggregateName = ownerClassName.endsWith("Service")
+                ? ownerClassName.substring(0, ownerClassName.length() - "Service".length())
+                : ownerClassName.endsWith("Module")
+                    ? ownerClassName.substring(0, ownerClassName.length() - "Module".length())
+                    : ownerClassName;
+        String repositoryType = aggregateName + "Repository";
+        String fieldName = Character.toLowerCase(repositoryType.charAt(0)) + repositoryType.substring(1);
+        return new String[]{repositoryType, modulePackage + "." + repositoryType, fieldName};
+    }
+
+    // -------------------------------------------------------------------------
+    // Aggregate ID field resolution
+    // -------------------------------------------------------------------------
+
+    /**
+     * Resolves the aggregate ID field name from the saga definitions using a priority-ordered
+     * fallback chain. Returns {@code null} only when no candidate is found so the caller can
+     * fall back to the stub/error path.
+     *
+     * <p>Strategy order (both {@code aggregateName} and {@code entityName} are tried where
+     * they differ, so e.g. {@code RecruitmentModule} with {@code CandidateRepository} searches
+     * for both {@code "recruitmentId"} and {@code "candidateId"}):
+     * <ol>
+     *   <li>Exact {@code <aggregateName>Id}</li>
+     *   <li>Exact {@code <entityName>Id} (when entity differs from aggregate name)</li>
+     *   <li>Bare {@code id}</li>
+     *   <li>Numeric {@code extraLocalVar} ending in {@code Id}/{@code ID}</li>
+     *   <li>Numeric {@code sagaMethodParam} starting with {@code aggregateName} prefix</li>
+     *   <li>Numeric {@code sagaMethodParam} starting with {@code entityName} prefix (when different)</li>
+     * </ol>
+     */
+    private String resolveAggregateIdField(List<SagaDefinition> sagas,
+                                            String aggregateName, String entityName) {
+        // Strategy 1: conventional <aggregateName>Id
+        String conventional = aggregateName.toLowerCase() + "Id";
+        if (existsInSagaParams(sagas, conventional)) return conventional;
+
+        // Strategy 1b: <entityName>Id — covers cases where entity ≠ owner class name
+        if (!entityName.equals(aggregateName)) {
+            String entityConventional = entityName.toLowerCase() + "Id";
+            if (existsInSagaParams(sagas, entityConventional)) return entityConventional;
+        }
+
+        // Strategy 2: bare "id"
+        if (existsInSagaParams(sagas, "id")) return "id";
+
+        // Strategy 3a: numeric extraLocalVar ending in "Id"/"ID"
+        // Extra local vars are derived inside the method body (e.g. Long leaveId = leave.getId()),
+        // so they are almost always the aggregate's own primary key, not a foreign key.
+        Optional<String> extraIdMatch = sagas.stream()
+                .flatMap(s -> s.getExtraLocalVars().stream())
+                .filter(this::isNumericIdParam)
+                .map(MethodParam::getName)
+                .findFirst();
+        if (extraIdMatch.isPresent()) return extraIdMatch.get();
+
+        // Strategy 3b: numeric sagaMethodParam whose name starts with the aggregate name prefix.
+        String aggrPrefix = aggregateName.toLowerCase();
+        Optional<String> aggrMatch = sagas.stream()
+                .flatMap(s -> s.getSagaMethodParams().stream())
+                .filter(p -> isNumericIdParam(p) && p.getName().toLowerCase().startsWith(aggrPrefix))
+                .map(MethodParam::getName)
+                .findFirst();
+        if (aggrMatch.isPresent()) return aggrMatch.get();
+
+        // Strategy 3c: numeric sagaMethodParam whose name starts with the entity name prefix
+        // (when entity differs from aggregate; e.g. "candidate" matches "candidateId").
+        if (!entityName.equals(aggregateName)) {
+            String entityPrefix = entityName.toLowerCase();
+            Optional<String> entityMatch = sagas.stream()
+                    .flatMap(s -> s.getSagaMethodParams().stream())
+                    .filter(p -> isNumericIdParam(p) && p.getName().toLowerCase().startsWith(entityPrefix))
+                    .map(MethodParam::getName)
+                    .findFirst();
+            if (entityMatch.isPresent()) return entityMatch.get();
+        }
+
+        // No match — return null so the caller generates a FIXME stub rather than using
+        // an unrelated foreign key ID (which would cause silent data corruption).
+        return null;
+    }
+
+    private boolean existsInSagaParams(List<SagaDefinition> sagas, String name) {
+        return sagas.stream().anyMatch(s ->
+                s.getSagaMethodParams().stream().anyMatch(p -> p.getName().equals(name))
+                || s.getExtraLocalVars().stream().anyMatch(p -> p.getName().equals(name)));
+    }
+
+    private boolean isNumericIdParam(MethodParam p) {
+        String type = p.getType();
+        String name = p.getName();
+        boolean numericType = "Long".equals(type) || "long".equals(type)
+                || "Integer".equals(type) || "int".equals(type);
+        boolean idName = name.endsWith("Id") || name.endsWith("ID")
+                || "id".equalsIgnoreCase(name);
+        return numericType && idName;
     }
 
     /**
