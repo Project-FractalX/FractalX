@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.stereotype.Component;
 
@@ -18,6 +19,11 @@ import java.util.UUID;
  * Server side: extracts correlationId from incoming gRPC metadata and populates MDC
  *              via ForwardingServerCallListener so it is available in the gRPC thread
  *              that actually invokes the service method (onHalfClose / onMessage).
+ *
+ * JWT validation and Spring Security context propagation are delegated to
+ * InternalTokenValidator and only activated when netscope.server.security.enabled=true.
+ * When security is disabled InternalTokenValidator is never loaded, so JJWT and
+ * Spring Security do not need to be on the classpath.
  */
 @Component
 @ConditionalOnClass(name = "io.grpc.BindableService")
@@ -27,15 +33,16 @@ public class NetScopeContextInterceptor implements ClientInterceptor, ServerInte
     private static final String CORRELATION_ID_KEY = "correlationId";
     private static final Metadata.Key<String> CORRELATION_METADATA_KEY =
             Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
-
-    // Internal Call Token — signed JWT minted by the gateway; carries user identity securely
     private static final Metadata.Key<String> INTERNAL_TOKEN_KEY =
             Metadata.Key.of("x-internal-token", Metadata.ASCII_STRING_MARSHALLER);
 
     @Autowired(required = false)
     private Tracer tracer;
 
-    // ---- Client side: inject correlationId into outgoing gRPC metadata ----
+    @Value("${netscope.server.security.enabled:false}")
+    private boolean securityEnabled;
+
+    // ---- Client side: inject correlationId + internal token into outgoing gRPC metadata ----
 
     @Override
     public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
@@ -46,24 +53,24 @@ public class NetScopeContextInterceptor implements ClientInterceptor, ServerInte
         return new ForwardingClientCall.SimpleForwardingClientCall<>(next.newCall(method, callOptions)) {
             @Override
             public void start(Listener<RespT> responseListener, Metadata headers) {
-                // Propagate correlation ID
                 String correlationId = MDC.get(CORRELATION_ID_KEY);
                 if (correlationId != null) {
                     headers.put(CORRELATION_METADATA_KEY, correlationId);
                     log.debug("NetScope: injected correlationId={} into outgoing gRPC metadata", correlationId);
                 }
-                // Propagate Internal Call Token (signed JWT) for secured inter-service identity
-                try {
-                    org.springframework.security.core.Authentication auth =
-                            org.springframework.security.core.context.SecurityContextHolder
-                                    .getContext().getAuthentication();
-                    if (auth != null && auth.getCredentials() instanceof String token
-                            && !((String) auth.getCredentials()).isBlank()) {
-                        headers.put(INTERNAL_TOKEN_KEY, (String) auth.getCredentials());
-                        log.debug("NetScope: injected x-internal-token into outgoing gRPC metadata");
+                if (securityEnabled) {
+                    try {
+                        org.springframework.security.core.Authentication auth =
+                                org.springframework.security.core.context.SecurityContextHolder
+                                        .getContext().getAuthentication();
+                        if (auth != null && auth.getCredentials() instanceof String token
+                                && !((String) auth.getCredentials()).isBlank()) {
+                            headers.put(INTERNAL_TOKEN_KEY, (String) auth.getCredentials());
+                            log.debug("NetScope: injected x-internal-token into outgoing gRPC metadata");
+                        }
+                    } catch (NoClassDefFoundError ignored) {
+                        // Spring Security not on classpath — skip
                     }
-                } catch (NoClassDefFoundError ignored) {
-                    // Spring Security not on classpath — skip identity propagation
                 }
                 super.start(responseListener, headers);
             }
@@ -87,10 +94,9 @@ public class NetScopeContextInterceptor implements ClientInterceptor, ServerInte
         }
 
         final String cid = correlationId;
+        final String internalToken = securityEnabled ? headers.get(INTERNAL_TOKEN_KEY) : null;
         ServerCall.Listener<ReqT> delegate = next.startCall(call, headers);
 
-        // Wrap the listener so MDC is set in each callback where the service method may run.
-        // For unary calls, invokeMethod() is triggered inside onHalfClose().
         return new ForwardingServerCallListener.SimpleForwardingServerCallListener<>(delegate) {
 
             private void tagCurrentSpan(String cid) {
@@ -114,73 +120,15 @@ public class NetScopeContextInterceptor implements ClientInterceptor, ServerInte
             public void onHalfClose() {
                 MDC.put(CORRELATION_ID_KEY, cid);
                 tagCurrentSpan(cid);
-                // Reconstruct Spring Authentication from x-internal-token gRPC metadata (if present)
-                String internalToken = headers.get(INTERNAL_TOKEN_KEY);
-                if (internalToken != null && !internalToken.isBlank()) {
-                    try {
-                        String secret = resolveInternalJwtSecret();
-                        javax.crypto.SecretKey key = io.jsonwebtoken.security.Keys.hmacShaKeyFor(
-                                secret.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                        // JJWT 0.12.x API: parser() / verifyWith() / parseSignedClaims() / getPayload()
-                        io.jsonwebtoken.Claims claims = io.jsonwebtoken.Jwts.parser()
-                                .verifyWith(key)
-                                .requireIssuer("fractalx-gateway")
-                                .build()
-                                .parseSignedClaims(internalToken)
-                                .getPayload();
-                        // Validate audience — JJWT 0.12.x returns Set<String>
-                        java.util.Set<String> audSet = claims.getAudience();
-                        if (audSet == null || !audSet.contains("fractalx-internal")) {
-                            log.warn("NetScope: x-internal-token has unexpected audience '{}' — rejecting", audSet);
-                            super.onHalfClose();
-                            return;
-                        }
-                        String userId   = claims.getSubject();
-                        String rolesStr = claims.get("roles", String.class);
-                        java.util.List<org.springframework.security.core.authority.SimpleGrantedAuthority> auths =
-                                (rolesStr == null || rolesStr.isBlank())
-                                        ? java.util.List.of()
-                                        : java.util.Arrays.stream(rolesStr.split(","))
-                                                .map(String::trim)
-                                                .filter(r -> !r.isBlank())
-                                                .map(r -> new org.springframework.security.core.authority
-                                                        .SimpleGrantedAuthority("ROLE_" + r))
-                                                .collect(java.util.stream.Collectors.toList());
-
-                        // Extract extended claims forwarded by the gateway
-                        String username = claims.get("username", String.class);
-                        String email    = claims.get("email", String.class);
-                        java.util.Map<String, Object> attributes = new java.util.HashMap<>();
-                        java.util.Set<String> reserved = java.util.Set.of(
-                                "sub", "roles", "iss", "aud", "iat", "exp", "username", "email");
-                        claims.forEach((k, v) -> {
-                            if (!reserved.contains(k)) attributes.put(k, v);
-                        });
-
-                        GatewayPrincipal principal = new GatewayPrincipal(
-                                userId, username, email, auths,
-                                java.util.Collections.unmodifiableMap(attributes));
-
-                        org.springframework.security.core.context.SecurityContextHolder
-                                .getContext()
-                                .setAuthentication(
-                                        new org.springframework.security.authentication
-                                                .UsernamePasswordAuthenticationToken(principal, internalToken, auths));
-                        log.debug("NetScope: established Authentication for user={} from x-internal-token", userId);
-                    } catch (io.jsonwebtoken.ExpiredJwtException e) {
-                        log.warn("NetScope: x-internal-token expired for subject={} — request proceeds without auth. " +
-                                 "Check gateway clock sync or increase token TTL.", e.getClaims().getSubject());
-                    } catch (Exception e) {
-                        log.debug("NetScope: x-internal-token validation failed — {}", e.getMessage());
-                    }
+                if (securityEnabled && internalToken != null && !internalToken.isBlank()) {
+                    InternalTokenValidator.propagate(internalToken, log);
                 }
                 try {
                     super.onHalfClose();
                 } finally {
-                    // Clear security context after gRPC call to prevent thread-local leakage
-                    try {
-                        org.springframework.security.core.context.SecurityContextHolder.clearContext();
-                    } catch (NoClassDefFoundError ignored) { }
+                    if (securityEnabled) {
+                        InternalTokenValidator.clearContext();
+                    }
                     MDC.remove(CORRELATION_ID_KEY);
                 }
             }
@@ -197,19 +145,5 @@ public class NetScopeContextInterceptor implements ClientInterceptor, ServerInte
                 super.onCancel();
             }
         };
-    }
-
-    /**
-     * Resolves the internal JWT secret used to validate cross-service call tokens.
-     * Checks (in order): system property, env var, then a safe fallback default.
-     * In production set {@code FRACTALX_INTERNAL_JWT_SECRET} as an env var —
-     * must be identical across the gateway and all generated services.
-     */
-    private static String resolveInternalJwtSecret() {
-        String sysProp = System.getProperty("fractalx.security.internal-jwt-secret");
-        if (sysProp != null && !sysProp.isBlank()) return sysProp;
-        String envVar = System.getenv("FRACTALX_INTERNAL_JWT_SECRET");
-        if (envVar != null && !envVar.isBlank()) return envVar;
-        return "fractalx-internal-secret-change-in-prod-!!";
     }
 }

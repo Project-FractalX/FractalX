@@ -73,7 +73,7 @@ public class SagaOrchestratorGenerator {
         // ── Infrastructure files ─────────────────────────────────────────────
         writePom(serviceRoot, modules, config);
         writeApplicationClass(srcMainJava, basePackage);
-        writeApplicationYml(resourcesDir, modules, sagas);
+        writeApplicationYml(resourcesDir, modules, sagas, config);
         writeFlywayMigration(resourcesDir);
 
         // ── Shared model ─────────────────────────────────────────────────────
@@ -190,15 +190,7 @@ public class SagaOrchestratorGenerator {
                             <artifactId>fractalx-runtime</artifactId>
                             <version>__FX_VERSION__</version>__CLOUD_EXCLUSIONS__
                         </dependency>
-                        <dependency>
-                            <groupId>com.h2database</groupId>
-                            <artifactId>h2</artifactId>
-                            <scope>runtime</scope>
-                        </dependency>
-                        <dependency>
-                            <groupId>org.flywaydb</groupId>
-                            <artifactId>flyway-core</artifactId>
-                        </dependency>
+                __DB_DEPS__
                         <dependency>
                             <groupId>org.springframework.boot</groupId>
                             <artifactId>spring-boot-starter-actuator</artifactId>
@@ -240,6 +232,9 @@ public class SagaOrchestratorGenerator {
                     </build>
                 </project>
                 """);
+        FractalxConfig.ServiceOverride pomOverride = config.serviceOverrides().get("fractalx-saga-orchestrator");
+        String dbDeps = buildSagaDbDeps(pomOverride, config);
+
         writeFile(serviceRoot, "pom.xml",
                 sb.toString()
                         .replace("__SVC_VERSION__", config.initialServiceVersion())
@@ -247,6 +242,7 @@ public class SagaOrchestratorGenerator {
                         .replace("__FX_VERSION__", FractalxVersion.get())
                         .replace("__BASE_GROUP__", config.effectiveBasePackage())
                         .replace("__SB_VERSION__", config.springBootVersion())
+                        .replace("__DB_DEPS__", dbDeps)
                         .replace("__CLOUD_EXCLUSIONS__", SpringBootVersionUtil.isBoot4Plus(config.springBootVersion())
                                 ? "\n                            <exclusions>\n"
                                 + "                                <exclusion>\n"
@@ -259,6 +255,58 @@ public class SagaOrchestratorGenerator {
                                 + "                                </exclusion>\n"
                                 + "                            </exclusions>"
                                 : ""));
+    }
+
+    private static String buildSagaDbDeps(FractalxConfig.ServiceOverride override, FractalxConfig config) {
+        boolean useFlyway = override != null
+                ? override.effectiveFlyway(config.features().distributedData())
+                : config.features().distributedData();
+        String flywayDep = useFlyway
+                ? "        <dependency>\n"
+                + "            <groupId>org.flywaydb</groupId>\n"
+                + "            <artifactId>flyway-core</artifactId>\n"
+                + "        </dependency>\n"
+                : "";
+
+        if (override == null || !override.hasDatasource() || override.isH2()) {
+            return "        <dependency>\n"
+                    + "            <groupId>com.h2database</groupId>\n"
+                    + "            <artifactId>h2</artifactId>\n"
+                    + "            <scope>runtime</scope>\n"
+                    + "        </dependency>\n"
+                    + flywayDep;
+        }
+
+        String url = override.datasourceUrl();
+        if (url.contains("mysql")) {
+            String mysqlFlywayDep = useFlyway
+                    ? "        <dependency>\n"
+                    + "            <groupId>org.flywaydb</groupId>\n"
+                    + "            <artifactId>flyway-mysql</artifactId>\n"
+                    + "        </dependency>\n"
+                    : "";
+            return "        <dependency>\n"
+                    + "            <groupId>com.mysql</groupId>\n"
+                    + "            <artifactId>mysql-connector-j</artifactId>\n"
+                    + "            <scope>runtime</scope>\n"
+                    + "        </dependency>\n"
+                    + flywayDep
+                    + mysqlFlywayDep;
+        } else if (url.contains("postgresql")) {
+            return "        <dependency>\n"
+                    + "            <groupId>org.postgresql</groupId>\n"
+                    + "            <artifactId>postgresql</artifactId>\n"
+                    + "            <scope>runtime</scope>\n"
+                    + "        </dependency>\n"
+                    + flywayDep;
+        }
+        // Unknown driver — keep H2 as safe fallback
+        return "        <dependency>\n"
+                + "            <groupId>com.h2database</groupId>\n"
+                + "            <artifactId>h2</artifactId>\n"
+                + "            <scope>runtime</scope>\n"
+                + "        </dependency>\n"
+                + flywayDep;
     }
 
     private void writeApplicationClass(Path srcMainJava, String basePackage) throws IOException {
@@ -303,7 +351,8 @@ public class SagaOrchestratorGenerator {
 
     private void writeApplicationYml(Path resourcesDir,
                                       List<FractalModule> modules,
-                                      List<SagaDefinition> sagas) throws IOException {
+                                      List<SagaDefinition> sagas,
+                                      FractalxConfig config) throws IOException {
         // Collect the set of service names that participate in any saga
         Set<String> participatingServices = new java.util.LinkedHashSet<>();
         for (SagaDefinition saga : sagas) {
@@ -339,6 +388,54 @@ public class SagaOrchestratorGenerator {
                     .append("_OWNER_URL:http://localhost:").append(ownerPort).append("}\n");
         }
 
+        // Build datasource block from FractalxConfig override, falling back to H2 defaults
+        FractalxConfig.ServiceOverride sagaOverride = config.serviceOverrides().get("fractalx-saga-orchestrator");
+        final String datasourceBlock;
+        final String h2ConsoleBlock;
+        final String flywayBlock;
+        if (sagaOverride != null && sagaOverride.hasDatasource()) {
+            String driver = sagaOverride.datasourceDriver() != null
+                    ? sagaOverride.datasourceDriver()
+                    : (sagaOverride.datasourceUrl().contains("mysql") ? "com.mysql.cj.jdbc.Driver"
+                       : sagaOverride.datasourceUrl().contains("postgresql") ? "org.postgresql.Driver"
+                       : "org.h2.Driver");
+            boolean useFlyway = sagaOverride.effectiveFlyway(config.features().distributedData());
+            String ddlAuto = useFlyway ? "validate" : "update";
+            datasourceBlock = "  datasource:\n"
+                    + "    url: " + sagaOverride.datasourceUrl() + "\n"
+                    + "    driver-class-name: " + driver + "\n"
+                    + "    username: " + sagaOverride.datasourceUsername() + "\n"
+                    + "    password: " + (sagaOverride.datasourcePassword() != null ? sagaOverride.datasourcePassword() : "") + "\n"
+                    + "    hikari:\n"
+                    + "      maximum-pool-size: 5\n"
+                    + "      minimum-idle: 2\n"
+                    + "  jpa:\n"
+                    + "    hibernate:\n"
+                    + "      ddl-auto: " + ddlAuto + "\n"
+                    + "    show-sql: false\n";
+            h2ConsoleBlock = sagaOverride.isH2()
+                    ? "  h2:\n    console:\n      enabled: true\n"
+                    : "";
+            flywayBlock = useFlyway
+                    ? "  flyway:\n    enabled: true\n    locations: classpath:db/migration\n"
+                    : "  flyway:\n    enabled: false\n";
+        } else {
+            datasourceBlock = "  datasource:\n"
+                    + "    url: jdbc:h2:mem:saga_db\n"
+                    + "    driver-class-name: org.h2.Driver\n"
+                    + "    username: sa\n"
+                    + "    password:\n"
+                    + "    hikari:\n"
+                    + "      maximum-pool-size: 5\n"
+                    + "      minimum-idle: 2\n"
+                    + "  jpa:\n"
+                    + "    hibernate:\n"
+                    + "      ddl-auto: validate\n"
+                    + "    show-sql: false\n";
+            h2ConsoleBlock = "  h2:\n    console:\n      enabled: true\n";
+            flywayBlock = "  flyway:\n    enabled: true\n    locations: classpath:db/migration\n";
+        }
+
         writeFile(resourcesDir, "application.yml",
                 "spring:\n"
                 + "  application:\n"
@@ -349,24 +446,9 @@ public class SagaOrchestratorGenerator {
                 + "      # FractalX services use gRPC/NetScope, not Feign. Excluding prevents startup failure\n"
                 + "      # when spring-cloud-context is not on the classpath (e.g. Spring Boot 4.x).\n"
                 + "      - org.springframework.cloud.openfeign.FeignAutoConfiguration\n"
-                + "  datasource:\n"
-                + "    url: jdbc:h2:mem:saga_db\n"
-                + "    driver-class-name: org.h2.Driver\n"
-                + "    username: sa\n"
-                + "    password:\n"
-                + "    hikari:\n"
-                + "      maximum-pool-size: 5\n"
-                + "      minimum-idle: 2\n"
-                + "  jpa:\n"
-                + "    hibernate:\n"
-                + "      ddl-auto: validate\n"
-                + "    show-sql: false\n"
-                + "  h2:\n"
-                + "    console:\n"
-                + "      enabled: true\n"
-                + "  flyway:\n"
-                + "    enabled: true\n"
-                + "    locations: classpath:db/migration\n"
+                + datasourceBlock
+                + h2ConsoleBlock
+                + flywayBlock
                 + "\n"
                 + "server:\n"
                 + "  port: 8099\n"
