@@ -254,6 +254,21 @@ public class SagaMethodTransformer implements ServiceFileGenerator {
             }
         }
 
+        // Annotation-declared values take precedence over auto-detected defaults.
+        // successStatus / failureStatus accept "ACTIVE" (String literal) or
+        // "OrderStatus.ACTIVE" (qualified enum reference).
+        SagaDefinition primarySaga = sagas.get(0);
+        if (!primarySaga.getSuccessStatus().isBlank()) {
+            String[] resolved = resolveStatusValue(primarySaga.getSuccessStatus(), entityCandidates);
+            confirmedValue = resolved[0];
+            if (!resolved[1].isEmpty()) statusImport = resolved[1];
+        }
+        if (!primarySaga.getFailureStatus().isBlank()) {
+            String[] resolved = resolveStatusValue(primarySaga.getFailureStatus(), entityCandidates);
+            cancelledValue = resolved[0];
+            if (!resolved[1].isEmpty() && statusImport.isEmpty()) statusImport = resolved[1];
+        }
+
         // Build the CONFIRMED update block
         String confirmBlock;
         String cancelBlock;
@@ -862,6 +877,42 @@ public class SagaMethodTransformer implements ServiceFileGenerator {
             if (available.contains(candidate)) return candidate;
         }
         return null;
+    }
+
+    /**
+     * Converts an annotation-declared status value into the Java source to emit plus
+     * an optional import line.
+     *
+     * <ul>
+     *   <li>{@code "ACTIVE"}              → {@code ["\"ACTIVE\"", ""]}</li>
+     *   <li>{@code "OrderStatus.ACTIVE"}  → {@code ["OrderStatus.ACTIVE", "import com.example.OrderStatus;\n"]}</li>
+     * </ul>
+     *
+     * @return two-element array: [emittedValue, importLine]
+     */
+    private static String[] resolveStatusValue(String annotationValue, List<Path> entityCandidates) {
+        if (!annotationValue.contains(".")) {
+            // Plain String value — wrap in quotes for the generated code
+            return new String[]{"\"" + annotationValue + "\"", ""};
+        }
+        // Qualified enum constant e.g. "OrderStatus.ACTIVE"
+        String enumTypeName = annotationValue.substring(0, annotationValue.lastIndexOf('.'));
+        String importLine = "";
+        for (Path entityFile : entityCandidates) {
+            if (!Files.exists(entityFile)) continue;
+            try {
+                CompilationUnit cu = new JavaParser().parse(entityFile).getResult().orElse(null);
+                if (cu == null) continue;
+                for (var imp : cu.getImports()) {
+                    if (imp.getNameAsString().endsWith("." + enumTypeName)) {
+                        importLine = "import " + imp.getNameAsString() + ";\n";
+                        break;
+                    }
+                }
+            } catch (Exception ignored) {}
+            break;
+        }
+        return new String[]{annotationValue, importLine};
     }
 
     // -------------------------------------------------------------------------

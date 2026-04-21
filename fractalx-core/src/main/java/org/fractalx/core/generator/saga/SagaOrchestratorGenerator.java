@@ -74,6 +74,7 @@ public class SagaOrchestratorGenerator {
         writePom(serviceRoot, modules, config);
         writeApplicationClass(srcMainJava, basePackage);
         writeApplicationYml(resourcesDir, modules, sagas, config);
+        writeApplicationDockerYml(resourcesDir, modules, sagas, config);
         writeFlywayMigration(resourcesDir);
 
         // ── Shared model ─────────────────────────────────────────────────────
@@ -491,6 +492,104 @@ public class SagaOrchestratorGenerator {
                 + "  level:\n"
                 + "    org.fractalx: INFO\n"
                 + "    org.fractalx.netscope: DEBUG\n");
+    }
+
+    private void writeApplicationDockerYml(Path resourcesDir,
+                                             List<FractalModule> modules,
+                                             List<SagaDefinition> sagas,
+                                             FractalxConfig config) throws IOException {
+        FractalxConfig.ServiceOverride sagaOverride = config.serviceOverrides().get("fractalx-saga-orchestrator");
+
+        // Build datasource block with env var placeholders and Docker-friendly default URLs
+        final String datasourceBlock;
+        final String h2ConsoleBlock;
+        final String flywayBlock;
+
+        if (sagaOverride != null && sagaOverride.hasDatasource()) {
+            String devUrl = sagaOverride.datasourceUrl();
+            String dockerUrl = toDockerUrl(devUrl);
+            String driver = sagaOverride.datasourceDriver() != null
+                    ? sagaOverride.datasourceDriver()
+                    : (devUrl.contains("mysql") ? "com.mysql.cj.jdbc.Driver"
+                       : devUrl.contains("postgresql") ? "org.postgresql.Driver"
+                       : "org.h2.Driver");
+            String username = sagaOverride.datasourceUsername() != null ? sagaOverride.datasourceUsername() : "sa";
+            String password = sagaOverride.datasourcePassword() != null ? sagaOverride.datasourcePassword() : "";
+            boolean useFlyway = sagaOverride.effectiveFlyway(config.features().distributedData());
+            String ddlAuto = useFlyway ? "validate" : "update";
+            datasourceBlock = "  datasource:\n"
+                    + "    url: ${DB_URL:" + dockerUrl + "}\n"
+                    + "    driver-class-name: " + driver + "\n"
+                    + "    username: ${DB_USERNAME:" + username + "}\n"
+                    + "    password: ${DB_PASSWORD:" + password + "}\n"
+                    + "    hikari:\n"
+                    + "      maximum-pool-size: 5\n"
+                    + "      minimum-idle: 2\n"
+                    + "  jpa:\n"
+                    + "    hibernate:\n"
+                    + "      ddl-auto: " + ddlAuto + "\n"
+                    + "    show-sql: false\n";
+            h2ConsoleBlock = sagaOverride.isH2() ? "  h2:\n    console:\n      enabled: false\n" : "";
+            flywayBlock = useFlyway
+                    ? "  flyway:\n    enabled: true\n    locations: classpath:db/migration\n"
+                    : "  flyway:\n    enabled: false\n";
+        } else {
+            // Default H2 — env var fallback still useful for overriding in Docker
+            datasourceBlock = "  datasource:\n"
+                    + "    url: ${DB_URL:jdbc:h2:mem:saga_db}\n"
+                    + "    driver-class-name: org.h2.Driver\n"
+                    + "    username: ${DB_USERNAME:sa}\n"
+                    + "    password: ${DB_PASSWORD:}\n"
+                    + "    hikari:\n"
+                    + "      maximum-pool-size: 5\n"
+                    + "      minimum-idle: 2\n"
+                    + "  jpa:\n"
+                    + "    hibernate:\n"
+                    + "      ddl-auto: validate\n"
+                    + "    show-sql: false\n";
+            h2ConsoleBlock = "  h2:\n    console:\n      enabled: false\n";
+            flywayBlock = "  flyway:\n    enabled: true\n    locations: classpath:db/migration\n";
+        }
+
+        // Build netscope servers block using env var placeholders for Docker hostname resolution
+        Set<String> participatingServices = new java.util.LinkedHashSet<>();
+        for (SagaDefinition saga : sagas) {
+            for (SagaStep step : saga.getSteps()) {
+                participatingServices.add(step.getTargetServiceName());
+            }
+        }
+        StringBuilder serversBlock = new StringBuilder();
+        for (String serviceName : participatingServices) {
+            int grpcPort = modules.stream()
+                    .filter(m -> m.getServiceName().equals(serviceName))
+                    .map(FractalModule::grpcPort)
+                    .findFirst()
+                    .orElse(19000);
+            String envPrefix = serviceName.toUpperCase().replace("-", "_");
+            serversBlock.append("      ").append(serviceName).append(":\n");
+            serversBlock.append("        host: ${").append(envPrefix).append("_HOST:").append(serviceName).append("}\n");
+            serversBlock.append("        port: ${").append(envPrefix).append("_GRPC_PORT:").append(grpcPort).append("}\n");
+        }
+
+        writeFile(resourcesDir, "application-docker.yml",
+                "# Docker profile — datasource and peer hosts from environment variables\n"
+                + "spring:\n"
+                + datasourceBlock
+                + h2ConsoleBlock
+                + flywayBlock
+                + "\n"
+                + "netscope:\n"
+                + "  client:\n"
+                + "    servers:" + (serversBlock.length() == 0 ? " {}\n" : "\n" + serversBlock));
+    }
+
+    /** Converts a localhost JDBC URL to a Docker-friendly URL by replacing the hostname. */
+    private static String toDockerUrl(String url) {
+        if (url == null) return url;
+        if (url.contains("mysql"))      return url.replace("localhost", "mysql");
+        if (url.contains("postgresql")) return url.replace("localhost", "postgres");
+        if (url.contains("h2"))         return url; // H2 is in-memory, no host
+        return url.replace("localhost", "db");
     }
 
     private void writeFlywayMigration(Path resourcesDir) throws IOException {

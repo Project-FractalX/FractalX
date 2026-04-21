@@ -395,9 +395,13 @@ The boundary class declares:
 
 > **Critical rule — same-module vs cross-module fields:**
 >
-> FractalX detects cross-module dependencies by checking whether a constructor-injected field's **type name ends in `Service` or `Client`**. It does **not** look at the package. This means that if you inject a same-module class whose name ends in `Service` (e.g., `OrderService`), FractalX will mistakenly treat it as a cross-module dependency and try to generate a gRPC client for it — which will break the generated service.
+> **New in 0.5.0:** FractalX now uses a deterministic **DependencyGraph** with structural annotation queries to detect dependencies, eliminating many name-suffix heuristics. However, it is **highly recommended** to explicitly declare cross-module dependencies using the `dependencies` attribute in the `@DecomposableModule` annotation.
+> 
+> Example: `@DecomposableModule(serviceName = "order-service", port = 8081, dependencies = {PaymentService.class, InventoryService.class})`
 >
-> **Rule**: In the `@DecomposableModule` class, only inject:
+> If you omit the `dependencies` attribute, FractalX falls back to a heuristic that checks whether a constructor-injected field's **type name ends in `Service` or `Client`**. It does **not** look at the package. This means that if you inject a same-module class whose name ends in `Service` (e.g., `OrderService`), FractalX may mistakenly treat it as a cross-module dependency and try to generate a gRPC client for it — which will break the generated service.
+>
+> **Rule**: In the `@DecomposableModule` class, explicitly list cross-module dependencies using the `dependencies` array. If relying on the fallback heuristic, only inject:
 > 1. Types from **other modules** whose names end in `Service` or `Client` (these become gRPC clients)
 > 2. `*Repository` types from the **same module** (these stay as local Spring beans)
 >
@@ -502,7 +506,8 @@ import java.math.BigDecimal;
 @DecomposableModule(
     serviceName  = "order-service",
     port         = 8081,
-    ownedSchemas = {"orders"}   // informational — appears in data README
+    ownedSchemas = {"orders"},  // informational — appears in data README
+    dependencies = {PaymentService.class, InventoryService.class} // New in 0.5.0: explicitly declare dependencies
 )
 @Service
 public class OrderModule {
@@ -529,7 +534,9 @@ public class OrderModule {
         sagaId             = "place-order-saga",
         compensationMethod = "cancelPlaceOrder",
         timeout            = 30000,
-        description        = "Places an order: charges payment and reserves inventory."
+        description        = "Places an order: charges payment and reserves inventory.",
+        successStatus      = "CONFIRMED",   // required — set on Order entity when saga succeeds
+        failureStatus      = "CANCELLED"    // required — set on Order entity when saga fails
     )
     @Transactional
     public Order placeOrder(Long customerId, BigDecimal totalAmount) {
@@ -611,7 +618,7 @@ Write JPA entities normally. Follow these rules:
 
 1. **Do not import entity classes from other modules.** If you need a reference, store the ID (a `Long` field).
 2. **Use `@Column(nullable = false)` for required fields** — FractalX uses this to generate Flyway SQL.
-3. **Include a `status` String field** for entities involved in sagas — the generated `SagaCompletionController` will set it to `"CONFIRMED"` or `"CANCELLED"`.
+3. **Include a `status` String or enum field** for entities involved in sagas — the generated `SagaCompletionController` will set it to the values declared in `successStatus` / `failureStatus` on the `@DistributedSaga` annotation.
 4. **Add `createdAt` / `updatedAt` fields** if you want them — they are preserved as-is.
 
 ```java
@@ -636,8 +643,9 @@ public class Order {
     private BigDecimal totalAmount;
 
     @Column(nullable = false)
-    private String status;          // "PENDING", "CONFIRMED", "CANCELLED"
-                                    // FractalX SagaCompletionController will set this
+    private String status;          // e.g. "PENDING", "CONFIRMED", "CANCELLED"
+                                    // FractalX SagaCompletionController sets this to
+                                    // successStatus / failureStatus from @DistributedSaga
 
     @Column(nullable = false)
     private LocalDateTime createdAt;
@@ -761,7 +769,10 @@ public class PlaceOrderRequest {
 
 ### 6.1 How to Declare a Cross-Module Dependency
 
-In the monolith, cross-module calls are normal Spring bean injections. The rules FractalX enforces:
+In the monolith, cross-module calls are normal Spring bean injections. **New in 0.5.0:** FractalX uses Phase 1 & 2 deterministic DependencyGraph structural queries to replace previous name-suffix and args-based heuristics for dependency detection, auth/data isolation, and JWT claim extraction from the UserDetails entity. 
+
+The recommended way to declare a cross-module call is to **explicitly define it in the `dependencies` attribute of `@DecomposableModule`**.
+If you omit the `dependencies` attribute, the fallback heuristic enforces:
 
 1. **The injected field type must end in `Service` or `Client`.**
 2. **The class must belong to a DIFFERENT module's package.** FractalX does NOT check the package — you must ensure this yourself. If you inject a same-module class whose name ends in `Service`, FractalX will mistakenly generate a gRPC client for it.
@@ -888,7 +899,7 @@ The saga method is the entry point. Write it in the `@DecomposableModule` class 
 1. Do **local work first** (save a PENDING entity, validate inputs, derive IDs).
 2. Then call the cross-module services **in the order you want them executed**.
 3. Do NOT write code after the cross-module calls that depends on their results — the generator removes those calls and replaces them with an outbox publish. Any code after the calls that references variables set by those calls is also removed.
-4. The method should return the locally-created entity (e.g., the PENDING order). Its status will be set to `CONFIRMED` or `CANCELLED` by the saga completion callback.
+4. The method should return the locally-created entity (e.g., the PENDING order). Its status will be set to the value of `successStatus` or `failureStatus` by the saga completion callback.
 5. **Saga method parameters must be simple, standard Java types.** Use `Long`, `String`, `BigDecimal`, `Integer`, `Boolean`, `UUID`, `LocalDate`, or `List`/`Map` of these types. **Do NOT use custom domain objects** (e.g., `List<OrderItem>`) as parameters — the saga orchestrator generates a typed payload record and only knows how to import standard Java types. Custom types as parameters will cause a compilation error in the generated orchestrator. If you need to pass complex data, use IDs and let the target service look up the details from its own database.
 
 ```java
@@ -896,7 +907,9 @@ The saga method is the entry point. Write it in the `@DecomposableModule` class 
     sagaId             = "place-order-saga",
     compensationMethod = "cancelPlaceOrder",   // method in THIS class for overall rollback
     timeout            = 30000,                // milliseconds before saga times out
-    description        = "Places an order by processing payment and reserving inventory."
+    description        = "Places an order by processing payment and reserving inventory.",
+    successStatus      = "CONFIRMED",          // required — status set on Order when saga succeeds
+    failureStatus      = "CANCELLED"           // required — status set on Order when saga fails
 )
 @Transactional
 public Order placeOrder(Long customerId, BigDecimal totalAmount) {
@@ -922,13 +935,15 @@ public Order placeOrder(Long customerId, BigDecimal totalAmount) {
     inventoryService.reserveStock(orderId);    // inventory service fetches its own items by orderId
 
     // 3. FINAL STATE — this code runs in monolith but is REMOVED in generated code
-    //    The saga completion callback sets status to CONFIRMED/CANCELLED instead
+    //    The saga completion callback sets status to successStatus/failureStatus instead
     order.setStatus("CONFIRMED");
     return orderRepository.save(order);      // in generated code: just "return order;"
 }
 ```
 
 **What FractalX does to this method in the generated `order-service`:**
+
+FractalX performs a **source-level transformation** (not AOP) that replaces the cross-module calls with an atomic outbox publish.
 
 ```java
 // GENERATED — what the method looks like after transformation:
@@ -951,12 +966,15 @@ public Order placeOrder(Long customerId, BigDecimal totalAmount) {
 
     return order;   // returns the PENDING order
 }
-// After this returns, the OutboxPoller forwards the event to the saga orchestrator.
-// The orchestrator then calls processPayment and reserveStock in order.
-// On success: calls POST /internal/saga-complete/{correlationId} → order.status = "CONFIRMED"
-// On failure: calls POST /internal/saga-failed/{correlationId} → order.status = "CANCELLED"
-// If the owner service is down when the callback is sent, the orchestrator retries
-// automatically every 2 seconds (up to 10 attempts). See Section 12.3 for details.
+// 1. DELIVERY: The OutboxPoller forwards the event to the orchestrator (port 8099).
+//    Delivery is INSTANT on transaction commit, with a 10s fallback poller for retries.
+// 2. ORCHESTRATION: The orchestrator then calls processPayment and reserveStock in order.
+// 3. CALLBACK:
+//    On success: calls POST /internal/saga-complete/{correlationId}
+//    On failure: calls POST /internal/saga-failed/{correlationId}
+// 4. ZERO-TOUCH COMPLETION: FractalX 0.5.0 generates a SagaCompletionController that
+//    automatically updates order.status to "CONFIRMED" or "CANCELLED" via the OrderRepository.
+//    If your service is down, the orchestrator retries this callback every 2 seconds (max 10 attempts).
 ```
 
 ### 7.3 Step 2 — Write the Compensation Methods
@@ -1112,18 +1130,29 @@ Create `src/main/resources/fractalx-config.yml` in your monolith to control how 
 
 ```yaml
 fractalx:
+  # New in 0.5.0: Configurable Java version, service version, and infrastructure ports.
+  java-version: 21                            # defaults to version read from source pom.xml, then 21
+  initial-service-version: 1.0.0-SNAPSHOT     # version for generated pom.xml artifacts
+  spring-boot-version: 3.3.2                  # defaults to version read from source pom.xml
 
   # Where Jaeger / OTel collector is running (for all services)
   otel:
     endpoint: http://localhost:4317         # default: http://localhost:4317
+    jaeger-ui-port: 16686
+    jaeger-otlp-port: 4317
 
   # Where the logger-service is running
   logger:
     url: http://localhost:9099              # default: http://localhost:9099
+    port: 9099                              # New in 0.5.0: logger port configurable
 
   # Where the service registry is running
   registry:
     url: http://localhost:8761              # default: http://localhost:8761
+    port: 8761                              # New in 0.5.0: registry port configurable
+  
+  saga:
+    port: 8099                              # New in 0.5.0: saga orchestrator port configurable
 
   # API Gateway settings
   gateway:
