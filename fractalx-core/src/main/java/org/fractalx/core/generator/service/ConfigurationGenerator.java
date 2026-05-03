@@ -221,12 +221,13 @@ public class ConfigurationGenerator implements ServiceFileGenerator {
                     ? (String) monolithDs.get("driver-class-name")
                     : deriveDriver(devUrl);
             String username = monolithDs.containsKey("username") ? String.valueOf(monolithDs.get("username")) : "postgres";
+            String password = monolithDs.containsKey("password") ? String.valueOf(monolithDs.get("password")) : "";
             // Convert localhost URL to docker-compose service name (postgres) as the fallback default
             String dockerUrl = toDockerUrl(devUrl, module.getServiceName());
             sb.append("    url: ${DB_URL:").append(dockerUrl).append("}\n");
             sb.append("    driver-class-name: ").append(driver).append("\n");
             sb.append("    username: ${DB_USERNAME:").append(username).append("}\n");
-            sb.append("    password: ${DB_PASSWORD:}\n");
+            sb.append("    password: ${DB_PASSWORD:").append(password).append("}\n");
         } else {
             sb.append("    url: ${DB_URL:jdbc:h2:mem:").append(module.getServiceName().replace("-", "_")).append("}\n");
             sb.append("    username: ${DB_USERNAME:sa}\n");
