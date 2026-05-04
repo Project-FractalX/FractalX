@@ -83,8 +83,6 @@ class AdminCommunicationGenerator {
                 @CrossOrigin(origins = "*")
                 public class CommunicationController {
 
-                    private static final int GATEWAY_PORT = 9999;
-
                     private final ServiceMetaRegistry registry;
                     private final RestTemplate        restTemplate = new RestTemplate();
 
@@ -151,9 +149,14 @@ class AdminCommunicationGenerator {
                     /** Proxies to the API gateway's actuator health endpoint. */
                     @GetMapping("/gateway/health")
                     public ResponseEntity<Object> getGatewayHealth() {
+                        String base = resolveBaseUrl("fractalx-gateway");
+                        if (base == null) {
+                            return ResponseEntity.ok(Map.of("status", "DOWN",
+                                    "error", "Gateway not registered with FractalX Registry"));
+                        }
                         try {
                             Object resp = restTemplate.getForObject(
-                                    "http://localhost:" + GATEWAY_PORT + "/actuator/health", Object.class);
+                                    base + "/actuator/health", Object.class);
                             return ResponseEntity.ok(resp);
                         } catch (Exception e) {
                             return ResponseEntity.ok(Map.of("status", "DOWN", "error", e.getMessage()));
@@ -163,12 +166,37 @@ class AdminCommunicationGenerator {
                     /** Proxies to the API gateway's actuator metrics endpoint. */
                     @GetMapping("/gateway/metrics")
                     public ResponseEntity<Object> getGatewayMetrics() {
+                        String base = resolveBaseUrl("fractalx-gateway");
+                        if (base == null) {
+                            return ResponseEntity.ok(Map.of(
+                                    "error", "Gateway not registered with FractalX Registry"));
+                        }
                         try {
                             Object resp = restTemplate.getForObject(
-                                    "http://localhost:" + GATEWAY_PORT + "/actuator/metrics", Object.class);
+                                    base + "/actuator/metrics", Object.class);
                             return ResponseEntity.ok(resp);
                         } catch (Exception e) {
                             return ResponseEntity.ok(Map.of("error", e.getMessage()));
+                        }
+                    }
+
+                    /**
+                     * Resolves a service's live base URL ({@code http://host:port}) by looking
+                     * up its registration in the FractalX Registry. Returns {@code null} if
+                     * the service is not registered or the registry is unreachable.
+                     */
+                    @SuppressWarnings("unchecked")
+                    private String resolveBaseUrl(String serviceName) {
+                        try {
+                            Map<String, Object> reg = restTemplate.getForObject(
+                                    registryUrl + "/services/" + serviceName, Map.class);
+                            if (reg == null) return null;
+                            Object host = reg.get("host");
+                            Object port = reg.get("port");
+                            if (host == null || !(port instanceof Number)) return null;
+                            return "http://" + host + ":" + ((Number) port).intValue();
+                        } catch (Exception e) {
+                            return null;
                         }
                     }
 

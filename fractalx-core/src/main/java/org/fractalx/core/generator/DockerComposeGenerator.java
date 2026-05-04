@@ -110,6 +110,7 @@ public class DockerComposeGenerator {
             services.append("    environment:\n");
             services.append("      - SPRING_PROFILES_ACTIVE=docker\n");
             services.append("      - FRACTALX_REGISTRY_URL=http://fractalx-registry:").append(regPort).append("\n");
+            services.append("      - FRACTALX_REGISTRY_HOST=fractalx-saga-orchestrator\n");
             services.append("      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:").append(config.jaegerOtlpPort()).append("\n");
             services.append("      - OTEL_SERVICE_NAME=fractalx-saga-orchestrator\n");
             services.append("      - FRACTALX_LOGGER_URL=http://logger-service:").append(config.loggerPort()).append("/api/logs\n");

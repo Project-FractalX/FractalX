@@ -128,7 +128,7 @@ class AdminConfigManagementGeneratorSpec extends Specification {
 
         then:
         content.contains('"fractalx-registry"')
-        content.contains('"api-gateway"')
+        content.contains('"fractalx-gateway"')
         content.contains('"admin-service"')
         content.contains('"logger-service"')
     }

@@ -126,6 +126,10 @@ public class SagaOrchestratorGenerator {
         writeFile(basePkg, "CorrelationTracingConfig.java", buildCorrelationTracingConfig(basePackage));
         writeFile(basePkg, "TracingExclusionConfig.java",   buildTracingExclusionConfig(basePackage));
 
+        // ── Self-registration with fractalx-registry ─────────────────────────
+        writeFile(basePkg, "SagaRegistryClient.java",        buildSagaRegistryClient(basePackage));
+        writeFile(basePkg, "SagaServiceRegistration.java",   buildSagaServiceRegistration(basePackage));
+
         // ── README ────────────────────────────────────────────────────────────
         new DataReadmeGenerator().generateSagaOrchestratorReadme(sagas, modules, serviceRoot);
 
@@ -465,6 +469,10 @@ public class SagaOrchestratorGenerator {
                 + "  port: 8099\n"
                 + "\n"
                 + "fractalx:\n"
+                + "  registry:\n"
+                + "    url: ${FRACTALX_REGISTRY_URL:http://localhost:8761}\n"
+                + "    enabled: true\n"
+                + "    host: ${FRACTALX_REGISTRY_HOST:localhost}\n"
                 + "  observability:\n"
                 + "    tracing: true\n"
                 + "    metrics: true\n"
@@ -1751,6 +1759,133 @@ public class SagaOrchestratorGenerator {
                     @Bean
                     public ObservationPredicate noScheduledTaskTracing() {
                         return (name, context) -> !name.startsWith("tasks.scheduled");
+                    }
+                }
+                """.replace("__BASE_PKG__", basePackage);
+    }
+
+    private String buildSagaRegistryClient(String basePackage) {
+        return """
+                package __BASE_PKG__;
+
+                import org.slf4j.Logger;
+                import org.slf4j.LoggerFactory;
+                import org.springframework.beans.factory.annotation.Value;
+                import org.springframework.stereotype.Component;
+                import org.springframework.web.client.RestTemplate;
+
+                import java.util.Map;
+
+                /**
+                 * Self-registration client for the FractalX Registry. Mirrors the client
+                 * generated for regular microservices so the saga orchestrator shows up
+                 * in {@code GET /services} alongside everything else.
+                 */
+                @Component
+                public class SagaRegistryClient {
+
+                    private static final Logger log = LoggerFactory.getLogger(SagaRegistryClient.class);
+
+                    @Value("${fractalx.registry.url:http://localhost:8761}")
+                    private String registryUrl;
+
+                    private final RestTemplate restTemplate = new RestTemplate();
+
+                    public void register(String name, String host, int port, String healthUrl) {
+                        try {
+                            Map<String, Object> payload = Map.of(
+                                    "name", name,
+                                    "host", host,
+                                    "port", port,
+                                    "grpcPort", 0,
+                                    "healthUrl", healthUrl
+                            );
+                            restTemplate.postForObject(registryUrl + "/services", payload, Object.class);
+                            log.info("Registered with fractalx-registry: {} at {}:{}", name, host, port);
+                        } catch (Exception e) {
+                            log.warn("Could not register with fractalx-registry at '{}': {} "
+                                    + "— verify that 'fractalx.registry.url' is correctly set "
+                                    + "and that fractalx-registry is running.", registryUrl, e.getMessage());
+                        }
+                    }
+
+                    public void deregister(String name) {
+                        try {
+                            restTemplate.delete(registryUrl + "/services/" + name + "/deregister");
+                            log.info("Deregistered from fractalx-registry: {}", name);
+                        } catch (Exception e) {
+                            log.warn("Could not deregister from fractalx-registry: {}", e.getMessage());
+                        }
+                    }
+
+                    public boolean heartbeat(String name) {
+                        try {
+                            restTemplate.postForObject(registryUrl + "/services/" + name + "/heartbeat",
+                                    null, Void.class);
+                            return true;
+                        } catch (Exception e) {
+                            log.trace("Heartbeat failed for {}: {}", name, e.getMessage());
+                            return false;
+                        }
+                    }
+                }
+                """.replace("__BASE_PKG__", basePackage);
+    }
+
+    private String buildSagaServiceRegistration(String basePackage) {
+        return """
+                package __BASE_PKG__;
+
+                import jakarta.annotation.PostConstruct;
+                import jakarta.annotation.PreDestroy;
+                import org.springframework.beans.factory.annotation.Value;
+                import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Component;
+
+                /**
+                 * Auto-registers the saga orchestrator with fractalx-registry on startup,
+                 * sends a heartbeat every 5 seconds, and deregisters on shutdown. The
+                 * {@code FRACTALX_REGISTRY_HOST} env var controls the host advertised in
+                 * the registration payload — Docker compose sets it to the container name
+                 * so peers can reach the orchestrator inside the Docker network.
+                 */
+                @Component
+                @ConditionalOnProperty(name = "fractalx.registry.enabled", havingValue = "true", matchIfMissing = true)
+                public class SagaServiceRegistration {
+
+                    private final SagaRegistryClient registryClient;
+
+                    @Value("${spring.application.name:fractalx-saga-orchestrator}")
+                    private String serviceName;
+
+                    @Value("${fractalx.registry.host:localhost}")
+                    private String serviceHost;
+
+                    @Value("${server.port:8099}")
+                    private int httpPort;
+
+                    public SagaServiceRegistration(SagaRegistryClient registryClient) {
+                        this.registryClient = registryClient;
+                    }
+
+                    @PostConstruct
+                    public void onStartup() {
+                        String healthUrl = "http://" + serviceHost + ":" + httpPort + "/actuator/health";
+                        registryClient.register(serviceName, serviceHost, httpPort, healthUrl);
+                    }
+
+                    @Scheduled(fixedDelay = 5_000)
+                    public void sendHeartbeat() {
+                        boolean ok = registryClient.heartbeat(serviceName);
+                        if (!ok) {
+                            onStartup();
+                        }
+                    }
+
+                    @PreDestroy
+                    public void onShutdown() {
+                        registryClient.deregister(serviceName);
                     }
                 }
                 """.replace("__BASE_PKG__", basePackage);

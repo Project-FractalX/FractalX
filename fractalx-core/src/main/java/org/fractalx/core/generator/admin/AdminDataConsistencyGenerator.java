@@ -181,8 +181,8 @@ class AdminDataConsistencyGenerator {
             String schemas = (m.getOwnedSchemas() != null && !m.getOwnedSchemas().isEmpty())
                     ? String.join(", ", m.getOwnedSchemas()) : "default";
             dbChecks.append(String.format(
-                    "        {Map<String,Object> db = new LinkedHashMap<>(); db.put(\"service\",\"%s\"); db.put(\"schemas\",\"%s\"); db.put(\"health\", fetchDbHealth(%d)); dbList.add(db);}\n",
-                    svcName, schemas, port));
+                    "        {Map<String,Object> db = new LinkedHashMap<>(); db.put(\"service\",\"%s\"); db.put(\"schemas\",\"%s\"); db.put(\"health\", fetchDbHealth(\"%s\")); dbList.add(db);}\n",
+                    svcName, schemas, svcName));
         }
 
         // Append saga-orchestrator DB — read from generated YAML, fall back to known defaults
@@ -202,7 +202,7 @@ class AdminDataConsistencyGenerator {
             "        {Map<String,Object> db = new LinkedHashMap<>();" +
             " db.put(\"service\",\"saga-orchestrator\");" +
             " db.put(\"schemas\",\"saga_instance\");" +
-            " db.put(\"health\", fetchDbHealth(SAGA_ORCHESTRATOR_PORT));" +
+            " db.put(\"health\", fetchDbHealth(\"fractalx-saga-orchestrator\"));" +
             " dbList.add(db);}\n"
         );
 
@@ -210,8 +210,8 @@ class AdminDataConsistencyGenerator {
         StringBuilder outboxChecks = new StringBuilder();
         for (FractalModule m : modules) {
             outboxChecks.append(String.format(
-                    "        {Map<String,Object> ob = new LinkedHashMap<>(); ob.put(\"service\",\"%s\"); ob.put(\"metrics\", fetchOutboxMetrics(%d)); outboxList.add(ob);}\n",
-                    m.getServiceName(), m.getPort()));
+                    "        {Map<String,Object> ob = new LinkedHashMap<>(); ob.put(\"service\",\"%s\"); ob.put(\"metrics\", fetchOutboxMetrics(\"%s\")); outboxList.add(ob);}\n",
+                    m.getServiceName(), m.getServiceName()));
         }
 
         int serviceCount = modules.size();
@@ -219,6 +219,7 @@ class AdminDataConsistencyGenerator {
         String content = """
                 package org.fractalx.admin.data;
 
+                import org.springframework.beans.factory.annotation.Value;
                 import org.springframework.http.ResponseEntity;
                 import org.springframework.web.bind.annotation.*;
                 import org.springframework.web.client.RestTemplate;
@@ -257,8 +258,32 @@ class AdminDataConsistencyGenerator {
                     private final SagaMetaRegistry registry;
                     private final RestTemplate     restTemplate = new RestTemplate();
 
+                    @Value("${fractalx.registry.url:http://localhost:8761}")
+                    private String registryUrl;
+
                     public DataConsistencyController(SagaMetaRegistry registry) {
                         this.registry = registry;
+                    }
+
+                    /**
+                     * Resolves a service's live base URL ({@code http://host:port}) by
+                     * looking up its registration in the FractalX Registry. Returns
+                     * {@code null} if the service is not registered or the registry
+                     * is unreachable — callers should fall back to a sensible default.
+                     */
+                    @SuppressWarnings("unchecked")
+                    private String resolveBaseUrl(String serviceName) {
+                        try {
+                            Map<String, Object> reg = restTemplate.getForObject(
+                                    registryUrl + "/services/" + serviceName, Map.class);
+                            if (reg == null) return null;
+                            Object host = reg.get("host");
+                            Object port = reg.get("port");
+                            if (host == null || !(port instanceof Number)) return null;
+                            return "http://" + host + ":" + ((Number) port).intValue();
+                        } catch (Exception e) {
+                            return null;
+                        }
                     }
 
                     /** Overview: service count, saga count, schema summary. */
@@ -283,9 +308,13 @@ class AdminDataConsistencyGenerator {
                     /** Proxies to saga-orchestrator GET /saga for all saga instances. */
                     @GetMapping("/sagas/instances")
                     public ResponseEntity<Object> getAllSagaInstances() {
+                        String base = resolveBaseUrl("fractalx-saga-orchestrator");
+                        if (base == null) {
+                            return ResponseEntity.ok(Map.of(
+                                "error", "Saga orchestrator not registered with FractalX Registry"));
+                        }
                         try {
-                            Object resp = restTemplate.getForObject(
-                                    "http://localhost:" + SAGA_ORCHESTRATOR_PORT + "/saga", Object.class);
+                            Object resp = restTemplate.getForObject(base + "/saga", Object.class);
                             return ResponseEntity.ok(resp);
                         } catch (Exception e) {
                             return ResponseEntity.ok(Map.of(
@@ -296,10 +325,14 @@ class AdminDataConsistencyGenerator {
                     /** Proxies to saga-orchestrator filtered by sagaId. */
                     @GetMapping("/sagas/{sagaId}/instances")
                     public ResponseEntity<Object> getSagaInstances(@PathVariable("sagaId") String sagaId) {
+                        String base = resolveBaseUrl("fractalx-saga-orchestrator");
+                        if (base == null) {
+                            return ResponseEntity.ok(Map.of(
+                                "error", "Saga orchestrator not registered with FractalX Registry"));
+                        }
                         try {
                             Object resp = restTemplate.getForObject(
-                                    "http://localhost:" + SAGA_ORCHESTRATOR_PORT + "/saga?sagaId=" + sagaId,
-                                    Object.class);
+                                    base + "/saga?sagaId=" + sagaId, Object.class);
                             return ResponseEntity.ok(resp);
                         } catch (Exception e) {
                             return ResponseEntity.ok(Map.of(
@@ -314,11 +347,14 @@ class AdminDataConsistencyGenerator {
                     @GetMapping("/sagas/instances/enriched")
                     @SuppressWarnings("unchecked")
                     public ResponseEntity<Object> getEnrichedInstances() {
+                        String base = resolveBaseUrl("fractalx-saga-orchestrator");
+                        if (base == null) {
+                            return ResponseEntity.ok(Map.of(
+                                "error", "Saga orchestrator not registered with FractalX Registry"));
+                        }
                         try {
                             List<Map<String, Object>> instances = (List<Map<String, Object>>)
-                                    restTemplate.getForObject(
-                                            "http://localhost:" + SAGA_ORCHESTRATOR_PORT + "/saga",
-                                            List.class);
+                                    restTemplate.getForObject(base + "/saga", List.class);
                             if (instances == null) return ResponseEntity.ok(new ArrayList<>());
 
                             List<Map<String, Object>> result = new ArrayList<>();
@@ -416,10 +452,12 @@ class AdminDataConsistencyGenerator {
                     // -------------------------------------------------------------------------
 
                     @SuppressWarnings("unchecked")
-                    private String fetchDbHealth(int port) {
+                    private String fetchDbHealth(String service) {
+                        String base = resolveBaseUrl(service);
+                        if (base == null) return "UNKNOWN";
                         try {
                             java.util.Map<String, Object> body = restTemplate.getForObject(
-                                    "http://localhost:" + port + "/actuator/health/db", java.util.Map.class);
+                                    base + "/actuator/health/db", java.util.Map.class);
                             return body != null && "UP".equalsIgnoreCase(String.valueOf(body.get("status")))
                                     ? "UP" : "DOWN";
                         } catch (Exception e) {
@@ -428,10 +466,14 @@ class AdminDataConsistencyGenerator {
                     }
 
                     @SuppressWarnings("unchecked")
-                    private Map<String, Object> fetchDbSummary(int port) {
+                    private Map<String, Object> fetchDbSummary(String service) {
+                        String base = resolveBaseUrl(service);
+                        if (base == null) {
+                            return Map.of("unavailable", true, "reason", "service not registered");
+                        }
                         try {
                             Map<String, Object> resp = restTemplate.getForObject(
-                                    "http://localhost:" + port + "/api/internal/db-summary", Map.class);
+                                    base + "/api/internal/db-summary", Map.class);
                             // restTemplate.getForObject can return null for empty responses — normalise to empty summary
                             if (resp == null) {
                                 return new LinkedHashMap<>(Map.of("totalRows", 0, "entityCounts", Map.of()));
@@ -449,10 +491,14 @@ class AdminDataConsistencyGenerator {
                         }
                     }
 
-                    private Object fetchOutboxMetrics(int port) {
+                    private Object fetchOutboxMetrics(String service) {
+                        String base = resolveBaseUrl(service);
+                        if (base == null) {
+                            return Map.of("error", "service not registered");
+                        }
                         try {
                             return restTemplate.getForObject(
-                                    "http://localhost:" + port + "/actuator/metrics", Object.class);
+                                    base + "/actuator/metrics", Object.class);
                         } catch (Exception e) {
                             return Map.of("error", e.getMessage());
                         }
@@ -460,10 +506,11 @@ class AdminDataConsistencyGenerator {
 
                     @SuppressWarnings("unchecked")
                     private String fetchSagaOrchestratorHealth() {
+                        String base = resolveBaseUrl("fractalx-saga-orchestrator");
+                        if (base == null) return "DOWN";
                         try {
                             java.util.Map<String, Object> body = restTemplate.getForObject(
-                                    "http://localhost:" + SAGA_ORCHESTRATOR_PORT + "/actuator/health",
-                                    java.util.Map.class);
+                                    base + "/actuator/health", java.util.Map.class);
                             return body != null && "UP".equalsIgnoreCase(String.valueOf(body.get("status")))
                                     ? "UP" : "DOWN";
                         } catch (Exception e) {
@@ -473,9 +520,11 @@ class AdminDataConsistencyGenerator {
 
                     @SuppressWarnings("unchecked")
                     private int fetchSagaInstanceCount() {
+                        String base = resolveBaseUrl("fractalx-saga-orchestrator");
+                        if (base == null) return -1;
                         try {
                             List<?> resp = (List<?>) restTemplate.getForObject(
-                                    "http://localhost:" + SAGA_ORCHESTRATOR_PORT + "/saga", List.class);
+                                    base + "/saga", List.class);
                             return resp != null ? resp.size() : 0;
                         } catch (Exception e) {
                             return -1;

@@ -112,6 +112,7 @@ class AdminAnalyticsGenerator {
                 import org.fractalx.admin.services.ServiceMetaRegistry;
                 import org.slf4j.Logger;
                 import org.slf4j.LoggerFactory;
+                import org.springframework.beans.factory.annotation.Value;
                 import org.springframework.http.client.SimpleClientHttpRequestFactory;
                 import org.springframework.scheduling.annotation.Scheduled;
                 import org.springframework.stereotype.Component;
@@ -137,6 +138,9 @@ class AdminAnalyticsGenerator {
                     private final RestTemplate                           rest;
                     private final ConcurrentHashMap<String, double[]>    prevCounts = new ConcurrentHashMap<>();
 
+                    @Value("${fractalx.registry.url:http://localhost:8761}")
+                    private String registryUrl;
+
                     public MetricsCollector(MetricsHistoryStore store, ServiceMetaRegistry registry) {
                         this.store    = store;
                         this.registry = registry;
@@ -150,12 +154,32 @@ class AdminAnalyticsGenerator {
                     public void collect() {
                         for (ServiceMetaRegistry.ServiceMeta svc : registry.getAll()) {
                             if (svc.port() <= 0) continue;
+                            String base = resolveBaseUrl(svc.name());
+                            if (base == null) continue;
                             try {
-                                String base = "http://localhost:" + svc.port();
                                 store.record(svc.name(), collectService(svc.name(), base));
                             } catch (Exception e) {
                                 log.debug("Metrics unavailable for {}: {}", svc.name(), e.getMessage());
                             }
+                        }
+                    }
+
+                    /**
+                     * Resolves a service's live base URL ({@code http://host:port}) by looking
+                     * up its registration in the FractalX Registry.
+                     */
+                    @SuppressWarnings("unchecked")
+                    private String resolveBaseUrl(String serviceName) {
+                        try {
+                            Map<String, Object> reg = rest.getForObject(
+                                    registryUrl + "/services/" + serviceName, Map.class);
+                            if (reg == null) return null;
+                            Object host = reg.get("host");
+                            Object port = reg.get("port");
+                            if (host == null || !(port instanceof Number)) return null;
+                            return "http://" + host + ":" + ((Number) port).intValue();
+                        } catch (Exception e) {
+                            return null;
                         }
                     }
 
