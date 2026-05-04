@@ -87,8 +87,13 @@ class GatewayRouteLocatorGeneratorSpec extends Specification {
         def c = routeLocator()
         c.contains("order-service-static")
         c.contains("payment-service-static")
-        c.contains("localhost:8081")
-        c.contains("localhost:8082")
+        // URIs go through resolveUri(serviceName, port) so Docker overrides via <NAME>_HOST,
+        // while local mode keeps the previous "http://localhost:<port>" behavior.
+        c.contains('resolveUri("order-service", 8081)')
+        c.contains('resolveUri("payment-service", 8082)')
+        // The fallback default inside resolveUri must remain "localhost" so local-mode
+        // generation is byte-for-byte compatible with the old behavior at runtime.
+        c.contains('env.getProperty(envKey, "localhost")')
     }
 
     def "DynamicRouteLocatorConfig references RegistryRouteFetcher to fetch live routes"() {
