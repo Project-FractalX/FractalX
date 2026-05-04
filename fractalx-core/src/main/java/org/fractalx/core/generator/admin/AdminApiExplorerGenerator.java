@@ -43,6 +43,7 @@ class AdminApiExplorerGenerator {
                 import org.fractalx.admin.services.ServiceMetaRegistry;
                 import org.slf4j.Logger;
                 import org.slf4j.LoggerFactory;
+                import org.springframework.beans.factory.annotation.Value;
                 import org.springframework.http.*;
                 import org.springframework.http.client.SimpleClientHttpRequestFactory;
                 import org.springframework.web.bind.annotation.*;
@@ -68,6 +69,9 @@ class AdminApiExplorerGenerator {
 
                     private final ServiceMetaRegistry registry;
                     private final RestTemplate        rest;
+
+                    @Value("${fractalx.registry.url:http://localhost:8761}")
+                    private String registryUrl;
 
                     public ApiExplorerController(ServiceMetaRegistry registry) {
                         this.registry = registry;
@@ -96,15 +100,45 @@ class AdminApiExplorerGenerator {
                     public Map<String, Object> mappings(@PathVariable String service) {
                         ServiceMetaRegistry.ServiceMeta meta = registry.findByName(service).orElse(null);
                         if (meta == null) return Map.of("error", "Unknown service: " + service, "endpoints", List.of());
-                        String baseUrl = "http://localhost:" + meta.port();
+                        // serverBaseUrl: used by this controller (server-side) to call the service's
+                        //   /actuator/mappings — must resolve to the container's DNS name in Docker.
+                        // browserBaseUrl: returned in the JSON response for the UI's "try this endpoint"
+                        //   buttons — must stay http://localhost:<port> because the user's browser
+                        //   reaches services via Docker's port mapping on the host machine.
+                        String serverBaseUrl  = resolveServerBaseUrl(meta.name(), meta.port());
+                        String browserBaseUrl = "http://localhost:" + meta.port();
                         try {
                             @SuppressWarnings("unchecked")
-                            Map<String, Object> raw = rest.getForObject(baseUrl + "/actuator/mappings", Map.class);
-                            return extractEndpoints(raw, baseUrl);
+                            Map<String, Object> raw = rest.getForObject(serverBaseUrl + "/actuator/mappings", Map.class);
+                            return extractEndpoints(raw, browserBaseUrl);
                         } catch (Exception e) {
                             log.debug("Could not load mappings for {}: {}", service, e.getMessage());
-                            return Map.of("error", "Mappings unavailable: " + e.getMessage(), "endpoints", List.of(), "baseUrl", baseUrl);
+                            return Map.of("error", "Mappings unavailable: " + e.getMessage(), "endpoints", List.of(), "baseUrl", browserBaseUrl);
                         }
+                    }
+
+                    /**
+                     * Resolves a service's live base URL ({@code http://host:port}) for server-side
+                     * calls by looking up its registration in the FractalX Registry. Falls back to
+                     * {@code http://localhost:<fallbackPort>} when the registry is unreachable or the
+                     * service is not registered, preserving local-mode behavior unchanged.
+                     */
+                    @SuppressWarnings("unchecked")
+                    private String resolveServerBaseUrl(String serviceName, int fallbackPort) {
+                        try {
+                            Map<String, Object> reg = rest.getForObject(
+                                    registryUrl + "/services/" + serviceName, Map.class);
+                            if (reg != null) {
+                                Object host = reg.get("host");
+                                Object port = reg.get("port");
+                                if (host != null && port instanceof Number) {
+                                    return "http://" + host + ":" + ((Number) port).intValue();
+                                }
+                            }
+                        } catch (Exception e) {
+                            log.trace("Registry lookup failed for {}: {}", serviceName, e.getMessage());
+                        }
+                        return "http://localhost:" + fallbackPort;
                     }
 
                     @PostMapping("/request")
