@@ -313,14 +313,31 @@ public class ConfigurationGenerator implements ServiceFileGenerator {
 
     /**
      * Converts a dev datasource URL (with {@code localhost}) to its Docker equivalent by
-     * replacing {@code localhost} with {@code postgres} (the conventional docker-compose
-     * service name). Falls back to an H2 URL if the input is blank.
+     * replacing {@code localhost} with the conventional docker-compose service name for the
+     * JDBC scheme (mysql → {@code mysql}, postgresql → {@code postgres}, mariadb → {@code
+     * mariadb}, sqlserver → {@code mssql}). The user is expected to provide a matching
+     * service entry in {@code docker-compose.yml} (or override via {@code DB_URL} env var).
+     * Falls back to an H2 URL if the input is blank.
      */
     private static String toDockerUrl(String devUrl, String serviceName) {
         if (devUrl == null || devUrl.isBlank()) {
             return "jdbc:h2:mem:" + serviceName.replace("-", "_");
         }
-        return devUrl.replace("//localhost:", "//postgres:");
+        String dockerHost = dockerHostForJdbcUrl(devUrl);
+        return devUrl.replace("//localhost:", "//" + dockerHost + ":");
+    }
+
+    /**
+     * Returns the conventional docker-compose service name for the given JDBC URL's scheme.
+     * Defaults to {@code postgres} when the scheme is unrecognized — historic behavior.
+     */
+    private static String dockerHostForJdbcUrl(String url) {
+        if (url == null)                         return "postgres";
+        if (url.contains(":mysql:"))             return "mysql";
+        if (url.contains(":mariadb:"))           return "mariadb";
+        if (url.contains(":postgresql:"))        return "postgres";
+        if (url.contains(":sqlserver:"))         return "mssql";
+        return "postgres";
     }
 
     /** Builds the legacy dev localhost {@code netscope.client.servers} block. */

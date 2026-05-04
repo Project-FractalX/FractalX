@@ -145,16 +145,23 @@ class AdminObservabilityGeneratorSpec extends Specification {
         c.contains("@Scheduled")
     }
 
-    def "AlertEvaluator bakes in all module service names and ports"() {
+    def "AlertEvaluator discovers services dynamically from the FractalX Registry"() {
         when:
         generator.generate(srcMainJava, basePackage, [order, payment])
 
         then:
         def c = readFile("AlertEvaluator.java")
-        c.contains("order-service")
-        c.contains("8081")
-        c.contains("payment-service")
-        c.contains("8082")
+        // Registry URL is injected (with a localhost fallback only as a default for local dev)
+        c.contains("@Value(\"\${fractalx.registry.url:http://localhost:8761}\")")
+        c.contains("registryUrl")
+        // Discovery happens at runtime via GET /services — no per-service ports baked in
+        c.contains("/services")
+        // No hardcoded fallback to "http://localhost:<servicePort>" inside the evaluation loop
+        !c.contains("http://localhost:8081")
+        !c.contains("http://localhost:8082")
+        // No legacy *_BASE_URL env var pattern
+        !c.contains("ORDER_SERVICE_BASE_URL")
+        !c.contains("PAYMENT_SERVICE_BASE_URL")
     }
 
     def "AlertChannels is a @Component with SSE subscribe and publish methods"() {
