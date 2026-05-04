@@ -228,6 +228,16 @@ public class SagaOrchestratorGenerator {
                                 <groupId>org.springframework.boot</groupId>
                                 <artifactId>spring-boot-maven-plugin</artifactId>
                                 <version>${spring-boot.version}</version>
+                                <executions>
+                                    <execution>
+                                        <goals>
+                                            <goal>repackage</goal>
+                                        </goals>
+                                    </execution>
+                                </executions>
+                                <configuration>
+                                    <mainClass>__BASE_GROUP__.sagaorchestrator.SagaOrchestratorApplication</mainClass>
+                                </configuration>
                             </plugin>
                         </plugins>
                     </build>
