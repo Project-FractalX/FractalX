@@ -55,7 +55,7 @@ class AdminConfigManagementGenerator {
                 "        new ServiceConfig(\"fractalx-registry\", 8761, 0, \"\", \"\", false, false, List.of(), Map.of(\"SPRING_PROFILES_ACTIVE\",\"docker\",\"FRACTALX_REGISTRY_URL\",\"%s\")),\n",
                 fractalxConfig.registryUrl()));
         configEntries.append(String.format(
-                "        new ServiceConfig(\"api-gateway\",       %d, 0, \"\", \"\", false, false, List.of(), Map.of(\"SPRING_PROFILES_ACTIVE\",\"docker\")),\n",
+                "        new ServiceConfig(\"fractalx-gateway\", %d, 0, \"\", \"\", false, false, List.of(), Map.of(\"SPRING_PROFILES_ACTIVE\",\"docker\")),\n",
                 fractalxConfig.gatewayPort()));
         configEntries.append(String.format(
                 "        new ServiceConfig(\"admin-service\",     %d, 0, \"\", \"\", false, false, List.of(), Map.of(\"SPRING_PROFILES_ACTIVE\",\"docker\",\"FRACTALX_LOGGER_URL\",\"%s\")),\n",

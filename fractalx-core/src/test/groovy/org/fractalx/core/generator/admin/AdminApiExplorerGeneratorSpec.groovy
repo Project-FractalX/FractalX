@@ -98,6 +98,24 @@ class AdminApiExplorerGeneratorSpec extends Specification {
         c.contains("mappings(")
     }
 
+    def "ApiExplorerController routes server-side mappings call through FractalX Registry"() {
+        when:
+        generator.generate(srcMainJava, basePackage, [order])
+
+        then:
+        def c = readController()
+        // Registry URL injected for server-side discovery (works in Docker, falls back to localhost locally)
+        c.contains("@Value(\"\${fractalx.registry.url:http://localhost:8761}\")")
+        c.contains("registryUrl")
+        // Helper present and used for the actuator call
+        c.contains("resolveServerBaseUrl(")
+        c.contains("serverBaseUrl + \"/actuator/mappings\"")
+        // Browser-facing baseUrl in JSON response stays localhost — UI/Postman use port-mapping on host
+        c.contains("browserBaseUrl = \"http://localhost:\" + meta.port()")
+        // resolveServerBaseUrl preserves local-mode fallback exactly
+        c.contains("\"http://localhost:\" + fallbackPort")
+    }
+
     def "ApiExplorerController extracts endpoints from dispatcherServlets in mappings response"() {
         when:
         generator.generate(srcMainJava, basePackage, [order])
@@ -167,6 +185,16 @@ class AdminApiExplorerGeneratorSpec extends Specification {
         def c = readController()
         c.contains("3_000") || c.contains("3000")
         c.contains("10_000") || c.contains("10000")
+    }
+
+    def "ApiExplorerController uses version-safe header check (no containsHeader)"() {
+        when:
+        generator.generate(srcMainJava, basePackage, [order])
+
+        then:
+        def c = readController()
+        !c.contains("containsHeader")
+        c.contains("getFirst")
     }
 
     def "generator works with multiple modules"() {

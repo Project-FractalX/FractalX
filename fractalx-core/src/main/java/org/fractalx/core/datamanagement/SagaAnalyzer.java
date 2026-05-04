@@ -149,6 +149,8 @@ public class SagaAnalyzer {
         String compensationMethod= extractAttr(annotation, "compensationMethod", "");
         String description       = extractAttr(annotation, "description", "");
         long   timeout           = extractLongAttr(annotation, "timeout", 30000L);
+        String successStatus     = extractAttr(annotation, "successStatus", "");
+        String failureStatus     = extractAttr(annotation, "failureStatus", "");
 
         if (sagaId.isBlank()) {
             log.warn("@DistributedSaga on {}.{} has no sagaId — skipping",
@@ -183,7 +185,9 @@ public class SagaAnalyzer {
                 timeout,
                 description,
                 sagaMethodParams,
-                extraLocalVars
+                extraLocalVars,
+                successStatus,
+                failureStatus
         );
     }
 

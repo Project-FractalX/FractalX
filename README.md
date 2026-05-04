@@ -363,8 +363,10 @@ FractalX detects methods annotated with `@DistributedSaga`, maps their cross-ser
 
 ```java
 @DistributedSaga(
-    sagaId       = "checkout",
-    compensationMethod = "cancelCheckout"
+    sagaId             = "checkout",
+    compensationMethod = "cancelCheckout",
+    successStatus      = "CONFIRMED",   // required — status set on entity when saga succeeds
+    failureStatus      = "CANCELLED"    // required — status set on entity when saga fails
 )
 public void processCheckout(Long orderId, Long userId) {
     orderService.confirm(orderId);
@@ -377,6 +379,32 @@ public void cancelCheckout(Long orderId, Long userId) {
     orderService.cancel(orderId);
 }
 ```
+
+#### `successStatus` and `failureStatus` — required
+
+Both parameters are **required**. Omitting either is a compile error:
+
+```
+error: annotation @DistributedSaga is missing a required element 'successStatus'
+```
+
+They tell the generator what status value to write on the aggregate entity when the saga orchestrator calls back with the result. Two formats are supported:
+
+**String status field** — use the raw value:
+```java
+successStatus = "ACTIVE",
+failureStatus = "CANCELLED"
+```
+Generated code: `entity.setStatus("ACTIVE")`
+
+**Enum status field** — prefix with the enum class name:
+```java
+successStatus = "OrderStatus.CONFIRMED",
+failureStatus = "OrderStatus.CANCELLED"
+```
+Generated code: `entity.setStatus(OrderStatus.CONFIRMED)` (import added automatically)
+
+The value must match a valid constant defined on your aggregate entity's status field. The generator does not validate this at build time — a mismatch will silently leave the entity in the wrong state at runtime.
 
 ### `@AdminEnabled` -- opt a service into extended admin controls
 
@@ -677,7 +705,7 @@ Before generating any code, FractalX validates your annotations and module graph
 | `INFRA_PORT_CONFLICT` | **Error** | A module's HTTP or gRPC port conflicts with a reserved infrastructure port (registry: 8761, gateway: 9999, admin: 9090, logger: 9099, saga orchestrator: 8099) | Change `@DecomposableModule(port = ...)` to an unreserved port |
 | `CIRCULAR_DEP` | **Error** | A circular dependency is detected in the service graph, e.g. `order-service → payment-service → order-service` | Extract shared state into a new `@DecomposableModule`, or break the cycle using an event/outbox pattern |
 | `REPO_BOUNDARY` | **Error** | A module directly injects a JPA repository owned by a different module — after decomposition that repository lives in a separate JVM and database | Move the data access logic into the owning service and expose it via a service method |
-| `SAGA_INTEGRITY` | **Error** | A `@DistributedSaga` method has no `sagaId`, two methods share the same `sagaId`, or a timeout value is ≤ 0 | Add a unique `sagaId`, e.g. `sagaId = "place-order-saga"`, and set a positive `timeout` |
+| `SAGA_INTEGRITY` | **Error** | A `@DistributedSaga` method has no `sagaId`, two methods share the same `sagaId`, a timeout value is ≤ 0, or `successStatus` / `failureStatus` are missing | Add a unique `sagaId`, a positive `timeout`, and both `successStatus` and `failureStatus` (e.g. `successStatus = "CONFIRMED", failureStatus = "CANCELLED"`) |
 | `UNRESOLVED_DEP` | Warning | A declared dependency type cannot be mapped to any known module's `serviceName` | Annotate the target class with a matching `@DecomposableModule`, or declare the dependency explicitly: `@DecomposableModule(dependencies = {PaymentService.class})` |
 | `LOMBOK_ALL_ARGS` | Warning | A `@DecomposableModule` class uses `@AllArgsConstructor` (or has no explicit constructor), which makes dependency detection unreliable | Switch to `@RequiredArgsConstructor` with `private final` fields, or declare dependencies explicitly in `@DecomposableModule(dependencies = {...})` |
 
@@ -1156,7 +1184,7 @@ After a saga reaches `DONE` or `FAILED`, the orchestrator calls back the **owner
 | Success | `POST /internal/saga-complete/{correlationId}` |
 | Failure | `POST /internal/saga-failed/{correlationId}` |
 
-These endpoints are implemented in `SagaCompletionController.java` (generated into the owner service's `saga/` package). The controller extracts the aggregate ID from the saga payload (e.g., `orderId`), then marks the entity `CONFIRMED` on success or `CANCELLED` on failure.
+These endpoints are implemented in `SagaCompletionController.java` (generated into the owner service's `saga/` package). The controller extracts the aggregate ID from the saga payload (e.g., `orderId`), then marks the entity with the status values declared in the `@DistributedSaga` annotation — `successStatus` on success and `failureStatus` on failure.
 
 The owner URL is configured in the orchestrator's `application.yml`:
 
@@ -2625,6 +2653,8 @@ project:
       description: "Coordinates payment and inventory reservation"
       compensationMethod: cancelOrder
       timeoutMs: 30000
+      successStatus: "CONFIRMED"     # required — entity status on saga success
+      failureStatus: "CANCELLED"     # required — entity status on saga failure
       steps:
         - service: payment-service
           method: processPayment
@@ -2814,7 +2844,9 @@ public class OrderModule {
         sagaId             = "place-order-saga",
         compensationMethod = "cancelPlaceOrder",
         timeout            = 30000,
-        description        = "Coordinates payment and inventory to place an order."
+        description        = "Coordinates payment and inventory to place an order.",
+        successStatus      = "CONFIRMED",   // required — set on Order entity when saga succeeds
+        failureStatus      = "CANCELLED"    // required — set on Order entity when saga fails
     )
     @Transactional
     public Order placeOrder(Long customerId, BigDecimal totalAmount) {

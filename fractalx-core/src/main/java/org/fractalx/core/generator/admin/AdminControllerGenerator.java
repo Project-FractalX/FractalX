@@ -68,6 +68,28 @@ class AdminControllerGenerator {
                             return false;
                         }
                     }
+
+                    /**
+                     * Resolves a service's live base URL ({@code http://host:port}) for server-side
+                     * health checks by looking up its registration in the FractalX Registry. Falls
+                     * back to {@code http://localhost:<fallbackPort>} when the registry is unreachable
+                     * or the service is not registered, preserving local-mode behavior unchanged.
+                     */
+                    @SuppressWarnings("unchecked")
+                    private String resolveServerBaseUrl(String serviceName, int fallbackPort) {
+                        try {
+                            Map<String, Object> reg = restTemplate.getForObject(
+                                    registryUrl + "/services/" + serviceName, Map.class);
+                            if (reg != null) {
+                                Object host = reg.get("host");
+                                Object port = reg.get("port");
+                                if (host != null && port instanceof Number) {
+                                    return "http://" + host + ":" + ((Number) port).intValue();
+                                }
+                            }
+                        } catch (Exception ignored) { }
+                        return "http://localhost:" + fallbackPort;
+                    }
                 }
                 """.formatted(buildServiceChecks(modules));
 
@@ -78,10 +100,17 @@ class AdminControllerGenerator {
     private String buildServiceChecks(List<FractalModule> modules) {
         StringBuilder sb = new StringBuilder();
         for (FractalModule module : modules) {
+            // First URL: stored on ServiceInfo and rendered as a clickable dashboard link
+            //   the user opens in their browser → must stay http://localhost:<port>
+            //   (browser reaches services via Docker's port mapping on the host machine).
+            // Health-check URL: server-side call from inside the admin container →
+            //   routed through resolveServerBaseUrl() so it resolves to the container's
+            //   DNS name in Docker; falls back to localhost in local mode.
             sb.append(String.format(
                     "services.add(new ServiceInfo(\"%s\", \"http://localhost:%d\","
-                    + " checkServiceHealth(\"http://localhost:%d/actuator/health\")));%n",
-                    module.getServiceName(), module.getPort(), module.getPort()
+                    + " checkServiceHealth(resolveServerBaseUrl(\"%s\", %d) + \"/actuator/health\")));%n",
+                    module.getServiceName(), module.getPort(),
+                    module.getServiceName(), module.getPort()
             ));
         }
         return sb.toString();

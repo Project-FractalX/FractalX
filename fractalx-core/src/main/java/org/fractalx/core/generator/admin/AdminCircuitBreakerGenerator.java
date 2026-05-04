@@ -45,6 +45,7 @@ class AdminCircuitBreakerGenerator {
                 import org.fractalx.admin.services.ServiceMetaRegistry;
                 import org.slf4j.Logger;
                 import org.slf4j.LoggerFactory;
+                import org.springframework.beans.factory.annotation.Value;
                 import org.springframework.http.client.SimpleClientHttpRequestFactory;
                 import org.springframework.web.bind.annotation.*;
                 import org.springframework.web.client.RestTemplate;
@@ -68,6 +69,9 @@ class AdminCircuitBreakerGenerator {
 
                     private final ServiceMetaRegistry registry;
                     private final RestTemplate        rest;
+
+                    @Value("${fractalx.registry.url:http://localhost:8761}")
+                    private String registryUrl;
 
                     public CircuitBreakerController(ServiceMetaRegistry registry) {
                         this.registry = registry;
@@ -102,7 +106,13 @@ class AdminCircuitBreakerGenerator {
                         Map<String, Object> out = new LinkedHashMap<>();
                         out.put("service", meta.name());
                         out.put("port",    meta.port());
-                        String url = "http://localhost:" + meta.port() + "/actuator/circuitbreakers";
+                        String base = resolveBaseUrl(meta.name());
+                        if (base == null) {
+                            out.put("error", "service not registered");
+                            out.put("circuitBreakers", List.of());
+                            return out;
+                        }
+                        String url = base + "/actuator/circuitbreakers";
                         try {
                             Map<String, Object> raw = rest.getForObject(url, Map.class);
                             List<Map<String, Object>> cbs = new ArrayList<>();
@@ -132,6 +142,25 @@ class AdminCircuitBreakerGenerator {
                             out.put("error", e.getMessage());
                         }
                         return out;
+                    }
+
+                    /**
+                     * Resolves a service's live base URL ({@code http://host:port}) by looking
+                     * up its registration in the FractalX Registry.
+                     */
+                    @SuppressWarnings("unchecked")
+                    private String resolveBaseUrl(String serviceName) {
+                        try {
+                            Map<String, Object> reg = rest.getForObject(
+                                    registryUrl + "/services/" + serviceName, Map.class);
+                            if (reg == null) return null;
+                            Object host = reg.get("host");
+                            Object port = reg.get("port");
+                            if (host == null || !(port instanceof Number)) return null;
+                            return "http://" + host + ":" + ((Number) port).intValue();
+                        } catch (Exception e) {
+                            return null;
+                        }
                     }
                 }
                 """);
