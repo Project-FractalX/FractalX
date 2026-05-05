@@ -40,6 +40,12 @@ public final class SagaDefinition {
     /** Human-readable description from {@code @DistributedSaga#description()}. */
     private final String description;
 
+    /** Success status value from {@code @DistributedSaga#successStatus()}. Empty means auto-detect. */
+    private final String successStatus;
+
+    /** Failure status value from {@code @DistributedSaga#failureStatus()}. Empty means auto-detect. */
+    private final String failureStatus;
+
     /**
      * The parameters of the {@code @DistributedSaga}-annotated method itself.
      * Used to generate a typed payload DTO that the orchestrator can deserialize
@@ -64,7 +70,9 @@ public final class SagaDefinition {
                           long timeoutMs,
                           String description,
                           List<MethodParam> sagaMethodParams,
-                          List<MethodParam> extraLocalVars) {
+                          List<MethodParam> extraLocalVars,
+                          String successStatus,
+                          String failureStatus) {
         this.sagaId             = sagaId;
         this.ownerServiceName   = ownerServiceName;
         this.ownerClassName     = ownerClassName;
@@ -75,6 +83,8 @@ public final class SagaDefinition {
         this.description        = description;
         this.sagaMethodParams   = List.copyOf(sagaMethodParams);
         this.extraLocalVars     = List.copyOf(extraLocalVars);
+        this.successStatus      = successStatus != null ? successStatus : "";
+        this.failureStatus      = failureStatus != null ? failureStatus : "";
     }
 
     public String getSagaId()                    { return sagaId; }
@@ -87,6 +97,8 @@ public final class SagaDefinition {
     public String getDescription()               { return description; }
     public List<MethodParam> getSagaMethodParams(){ return sagaMethodParams; }
     public List<MethodParam> getExtraLocalVars() { return extraLocalVars; }
+    public String getSuccessStatus()             { return successStatus; }
+    public String getFailureStatus()             { return failureStatus; }
 
     /** Derives a PascalCase class name from the sagaId. Example: {@code "place-order-saga" → "PlaceOrderSaga"}. */
     public String toClassName() {

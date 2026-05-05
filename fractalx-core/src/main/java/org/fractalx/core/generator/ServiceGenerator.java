@@ -336,7 +336,7 @@ public class ServiceGenerator {
 
         if (generateDocker && fractalxConfig.features().docker()) {
             onStepStart.accept("docker-compose + scripts");
-            dockerComposeGenerator.generate(modules, outputRoot, hasSagas, fractalxConfig);
+            dockerComposeGenerator.generate(modules, outputRoot, hasSagas, sagaDefinitions, fractalxConfig);
             generateStartScripts(modules, sagaDefinitions, authPattern);
             onStepComplete.accept("docker-compose + scripts");
         } else {

@@ -110,7 +110,8 @@ public class GatewayRouteLocatorGenerator {
                         .append(m.getServiceName()).append("\")\n");
                 staticRoutesBuilder.append("                                .setFallbackUri(\"forward:/fallback/")
                         .append(m.getServiceName()).append("\")))\n");
-                staticRoutesBuilder.append("                        .uri(\"http://localhost:").append(m.getPort()).append("\"));\n\n");
+                staticRoutesBuilder.append("                        .uri(resolveUri(\"")
+                        .append(m.getServiceName()).append("\", ").append(m.getPort()).append(")));\n\n");
             }
         }
 
@@ -124,7 +125,8 @@ public class GatewayRouteLocatorGenerator {
             staticRoutesBuilder.append("                r -> r.path(\"/api/").append(base).append("/**\", \"/api/").append(plural).append("/**\")\n");
             staticRoutesBuilder.append("                        .filters(f -> f.circuitBreaker(c -> c.setName(\"").append(m.getServiceName()).append("\")\n");
             staticRoutesBuilder.append("                                .setFallbackUri(\"forward:/fallback/").append(m.getServiceName()).append("\")))\n");
-            staticRoutesBuilder.append("                        .uri(\"http://localhost:").append(m.getPort()).append("\"));\n\n");
+            staticRoutesBuilder.append("                        .uri(resolveUri(\"")
+                    .append(m.getServiceName()).append("\", ").append(m.getPort()).append(")));\n\n");
         }
 
         String content = """
@@ -137,6 +139,7 @@ public class GatewayRouteLocatorGenerator {
                 import org.springframework.cloud.gateway.route.builder.RouteLocatorBuilder;
                 import org.springframework.context.annotation.Bean;
                 import org.springframework.context.annotation.Configuration;
+                import org.springframework.core.env.Environment;
                 import reactor.core.publisher.Flux;
 
                 import java.util.ArrayList;
@@ -149,11 +152,14 @@ public class GatewayRouteLocatorGenerator {
 
                     private final RegistryRouteFetcher registryFetcher;
                     private final RouteLocatorBuilder builder;
+                    private final Environment env;
 
                     public DynamicRouteLocatorConfig(RegistryRouteFetcher registryFetcher,
-                                                     RouteLocatorBuilder builder) {
+                                                     RouteLocatorBuilder builder,
+                                                     Environment env) {
                         this.registryFetcher = registryFetcher;
                         this.builder = builder;
+                        this.env = env;
                     }
 
                     @Bean
@@ -184,6 +190,20 @@ public class GatewayRouteLocatorGenerator {
                         routeBuilder.build().getRoutes().subscribe(routes::add);
                         log.debug("Built {} static fallback routes", routes.size());
                         return routes;
+                    }
+
+                    /**
+                     * Resolves the host portion of a static fallback URI from
+                     * {@code <SERVICE_NAME>_HOST} (uppercase, dashes → underscores),
+                     * defaulting to {@code localhost} when the variable is unset.
+                     * In Docker compose the variable is provided per service so the
+                     * fallback resolves to the container's DNS name; locally it
+                     * stays {@code localhost}.
+                     */
+                    private String resolveUri(String serviceName, int port) {
+                        String envKey = serviceName.toUpperCase().replace("-", "_") + "_HOST";
+                        String host = env.getProperty(envKey, "localhost");
+                        return "http://" + host + ":" + port;
                     }
                 }
                 """.formatted(staticRoutesBuilder.toString());

@@ -104,7 +104,7 @@ class AdminServicesDetailGeneratorSpec extends Specification {
 
         then:
         content.contains('"fractalx-registry"')
-        content.contains('"api-gateway"')
+        content.contains('"fractalx-gateway"')
         content.contains('"admin-service"')
         content.contains('"logger-service"')
         content.contains('"infrastructure"')
@@ -169,7 +169,7 @@ class AdminServicesDetailGeneratorSpec extends Specification {
 
         then:
         content.contains('addInitialRecord("fractalx-registry")')
-        content.contains('addInitialRecord("api-gateway")')
+        content.contains('addInitialRecord("fractalx-gateway")')
         content.contains('addInitialRecord("admin-service")')
         content.contains('addInitialRecord("logger-service")')
     }

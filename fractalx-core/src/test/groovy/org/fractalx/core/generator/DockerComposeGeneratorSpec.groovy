@@ -1,6 +1,7 @@
 package org.fractalx.core.generator
 
 import org.fractalx.core.model.FractalModule
+import org.fractalx.core.model.SagaDefinition
 import spock.lang.Specification
 import spock.lang.TempDir
 
@@ -119,6 +120,96 @@ class DockerComposeGeneratorSpec extends Specification {
 
         then:
         !compose().contains("fractalx-saga-orchestrator:")
+    }
+
+    def "microservices get FRACTALX_SAGA_ORCHESTRATOR_URL env var when saga orchestrator is generated"() {
+        when:
+        generator.generate([order, payment], outputRoot, true, FractalxConfig.defaults())
+
+        then:
+        // OutboxPoller in each microservice forwards events to this URL — must point at
+        // the orchestrator container, not localhost (which would resolve to the service itself).
+        def c = compose()
+        c.contains("FRACTALX_SAGA_ORCHESTRATOR_URL=http://fractalx-saga-orchestrator:8099")
+        // Should appear once per microservice (here: order + payment = 2)
+        c.findAll(/FRACTALX_SAGA_ORCHESTRATOR_URL=http:\/\/fractalx-saga-orchestrator:8099/).size() == 2
+    }
+
+    def "microservices do NOT get FRACTALX_SAGA_ORCHESTRATOR_URL when no saga orchestrator is generated"() {
+        when:
+        generator.generate([order], outputRoot, false, FractalxConfig.defaults())
+
+        then:
+        // No saga in this project — env var would be misleading and is omitted entirely
+        // so application.yml's localhost default still applies (matches local-mode behavior).
+        !compose().contains("FRACTALX_SAGA_ORCHESTRATOR_URL")
+    }
+
+    def "admin-service FRACTALX_LOGGER_URL must be the BASE URL (no /api/logs suffix)"() {
+        when:
+        generator.generate([order], outputRoot, false, FractalxConfig.defaults())
+
+        then:
+        // Admin's ObservabilityController appends /api/logs, /api/logs/services, /api/logs/stats
+        // itself. If compose includes the suffix, every log query 404s with double-suffix
+        // (http://logger-service:9099/api/logs/api/logs?...). This regression broke the admin
+        // UI's logs panel in Docker — guard against it.
+        def c = compose()
+        c.contains("FRACTALX_LOGGER_URL=http://logger-service:9099\n")
+        // Find admin-service block specifically and assert its FRACTALX_LOGGER_URL is base only
+        def adminBlock = c.substring(c.indexOf("admin-service:"), c.indexOf("fractalx-gateway:"))
+        adminBlock.contains("FRACTALX_LOGGER_URL=http://logger-service:9099\n")
+        !adminBlock.contains("FRACTALX_LOGGER_URL=http://logger-service:9099/api/logs")
+    }
+
+    def "microservices FRACTALX_LOGGER_URL keeps the /api/logs suffix (appender posts directly)"() {
+        when:
+        generator.generate([order, payment], outputRoot, false, FractalxConfig.defaults())
+
+        then:
+        // Microservices' log appender uses this URL directly as the POST target.
+        // Stripping /api/logs would break log forwarding entirely.
+        def c = compose()
+        c.contains("FRACTALX_LOGGER_URL=http://logger-service:9099/api/logs\n")
+    }
+
+    def "saga orchestrator gets <SAGAID>_OWNER_URL env vars per saga so completion notifications resolve in Docker"() {
+        given:
+        // Without these env vars the orchestrator falls back to localhost inside its own
+        // container, notifications loop forever and rows go to dead-letter. The values
+        // come from each saga's owner service name + port (resolved against the modules list).
+        def saga = new SagaDefinition(
+                "place-order-saga",  // sagaId
+                "order-service",     // ownerServiceName
+                "OrderService",      // ownerClassName
+                "placeOrder",        // methodName
+                [],                  // steps
+                "compensate",        // compensationMethod
+                30000L,              // timeoutMs
+                "test saga",         // description
+                [],                  // sagaMethodParams
+                [],                  // extraLocalVars
+                "",                  // successStatus
+                ""                   // failureStatus
+        )
+
+        when:
+        generator.generate([order, payment], outputRoot, true, [saga], FractalxConfig.defaults())
+
+        then:
+        // Env var name is upper-cased sagaId with dashes → underscores; URL points at the
+        // owner service's container DNS name + HTTP port (8081 for order-service here).
+        compose().contains("PLACE_ORDER_SAGA_OWNER_URL=http://order-service:8081")
+    }
+
+    def "no <SAGAID>_OWNER_URL env vars are emitted when no sagas are passed"() {
+        when:
+        generator.generate([order], outputRoot, true, [], FractalxConfig.defaults())
+
+        then:
+        // hasSagaOrchestrator=true with empty sagas list → orchestrator block exists but
+        // no per-saga env vars (matches an admin-disabled or saga-less project).
+        !compose().contains("_OWNER_URL=")
     }
 
     def "admin-service and fractalx-gateway are always included"() {

@@ -525,13 +525,13 @@ public class SmokeTestMojo extends FractalxBaseMojo {
                     integrationResult.sagaStarted = true;
 
                     // Probe saga endpoints
-                    int listStatus = httpProbe(sagaPort, "GET", "/sagas", false);
+                    int listStatus = httpProbe(sagaPort, "GET", "/saga", false);
                     integrationResult.sagaListStatus = listStatus;
 
                     if (listStatus > 0 && listStatus < 500) {
                         dash.onDone("Integration · saga endpoints");
                     } else {
-                        integrationResult.errors.add("Saga /sagas returned HTTP " + listStatus);
+                        integrationResult.errors.add("Saga /saga returned HTTP " + listStatus);
                         dash.onWarn("Integration · saga endpoints", "HTTP " + listStatus);
                     }
                 }
@@ -930,7 +930,7 @@ public class SmokeTestMojo extends FractalxBaseMojo {
             }
 
             if (integrationResult.sagaStarted) {
-                lines.add("  Saga Orchestrator: /sagas → HTTP " + integrationResult.sagaListStatus);
+                lines.add("  Saga Orchestrator: /saga → HTTP " + integrationResult.sagaListStatus);
             }
 
             if (!integrationResult.errors.isEmpty()) {

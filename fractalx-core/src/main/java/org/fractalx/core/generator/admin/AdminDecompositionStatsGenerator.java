@@ -135,7 +135,7 @@ class AdminDecompositionStatsGenerator {
                         out.put("totalSagaSteps",     %d);
                         out.put("hasSagaOrchestrator",%b);
                         // Infrastructure services always added
-                        out.put("infraServices", List.of("fractalx-registry", "api-gateway", "admin-service", "logger-service"));
+                        out.put("infraServices", List.of("fractalx-registry", "fractalx-gateway", "admin-service", "logger-service"));
                         return out;
                     }
 

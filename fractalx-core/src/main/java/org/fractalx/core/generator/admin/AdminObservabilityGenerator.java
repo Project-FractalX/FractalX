@@ -307,25 +307,18 @@ class AdminObservabilityGenerator {
     }
 
     private void generateAlertEvaluator(Path pkg, List<FractalModule> modules) throws IOException {
-        StringBuilder checks = new StringBuilder();
-        for (FractalModule m : modules) {
-            String envVar = m.getServiceName().toUpperCase().replace("-", "_") + "_BASE_URL";
-            checks.append("""
-                        evaluate("%s", 
-                                 System.getenv("%s") != null ? System.getenv("%s") + "/actuator/health" : "http://localhost:%d/actuator/health",
-                                 System.getenv("%s") != null ? System.getenv("%s") + "/actuator/metrics/http.server.requests" : "http://localhost:%d/actuator/metrics/http.server.requests");
-                    """.formatted(m.getServiceName(), envVar, envVar, m.getPort(), envVar, envVar, m.getPort()));
-        }
-
         Files.writeString(pkg.resolve("AlertEvaluator.java"), """
                 package org.fractalx.admin.observability;
 
                 import org.slf4j.Logger;
                 import org.slf4j.LoggerFactory;
+                import org.springframework.beans.factory.annotation.Value;
                 import org.springframework.scheduling.annotation.Scheduled;
                 import org.springframework.stereotype.Component;
                 import org.springframework.web.client.RestTemplate;
 
+                import java.util.Collections;
+                import java.util.List;
                 import java.util.Map;
                 import java.util.concurrent.ConcurrentHashMap;
 
@@ -333,6 +326,10 @@ class AdminObservabilityGenerator {
                  * Periodically polls every generated service and evaluates alert rules.
                  * Fires {@link AlertEvent}s via {@link NotificationDispatcher} on threshold breach.
                  * Auto-resolves alerts when the service recovers.
+                 *
+                 * <p>Service discovery is driven by the FractalX Registry's {@code GET /services}
+                 * endpoint — host/port come from each service's live registration, so this works
+                 * unchanged in both local (host=localhost) and Docker (host=container-name) modes.
                  */
                 @Component
                 public class AlertEvaluator {
@@ -343,6 +340,9 @@ class AdminObservabilityGenerator {
                     private final AlertStore              store;
                     private final NotificationDispatcher  dispatcher;
                     private final RestTemplate            rest = new RestTemplate();
+
+                    @Value("${fractalx.registry.url:http://localhost:8761}")
+                    private String registryUrl;
 
                     // consecutive failure counter per "service::rule"
                     private final Map<String, Integer> failureCounts = new ConcurrentHashMap<>();
@@ -359,7 +359,28 @@ class AdminObservabilityGenerator {
                     public void evaluate() {
                         if (!config.isEnabled()) return;
                         log.debug("Running alert evaluation cycle");
-                        %s
+
+                        List<?> services;
+                        try {
+                            services = rest.getForObject(registryUrl + "/services", List.class);
+                            if (services == null) services = Collections.emptyList();
+                        } catch (Exception e) {
+                            log.warn("Alert evaluation skipped — registry unreachable at {}: {}",
+                                    registryUrl, e.getMessage());
+                            return;
+                        }
+
+                        for (Object raw : services) {
+                            if (!(raw instanceof Map<?, ?> svc)) continue;
+                            Object name = svc.get("name");
+                            Object host = svc.get("host");
+                            Object port = svc.get("port");
+                            if (name == null || host == null || !(port instanceof Number)) continue;
+                            String base = "http://" + host + ":" + ((Number) port).intValue();
+                            evaluate(String.valueOf(name),
+                                     base + "/actuator/health",
+                                     base + "/actuator/metrics/http.server.requests");
+                        }
                     }
 
                     private void evaluate(String service, String healthUrl, String metricsUrl) {
@@ -439,7 +460,7 @@ class AdminObservabilityGenerator {
                         return 0.0;
                     }
                 }
-                """.formatted(checks.toString()));
+                """);
     }
 
     private void generateNotificationDispatcher(Path pkg) throws IOException {
@@ -666,14 +687,6 @@ class AdminObservabilityGenerator {
     }
 
     private void generateObservabilityController(Path pkg, List<FractalModule> modules) throws IOException {
-        StringBuilder healthChecks = new StringBuilder();
-        for (FractalModule m : modules) {
-            healthChecks.append("""
-                        metrics.put("%s", fetchServiceMetrics("%s", "http://localhost:%d/actuator/health",
-                                "http://localhost:%d/actuator/metrics/http.server.requests"));
-                    """.formatted(m.getServiceName(), m.getServiceName(), m.getPort(), m.getPort()));
-        }
-
         Files.writeString(pkg.resolve("ObservabilityController.java"), """
                 package org.fractalx.admin.observability;
 
@@ -718,6 +731,9 @@ class AdminObservabilityGenerator {
                     @Value("${fractalx.observability.logger-url:http://localhost:9099}")
                     private String loggerUrl;
 
+                    @Value("${fractalx.registry.url:http://localhost:8761}")
+                    private String registryUrl;
+
                     public ObservabilityController(AlertStore store,
                                                    AlertConfigProperties config,
                                                    AlertChannels channels) {
@@ -731,7 +747,26 @@ class AdminObservabilityGenerator {
                     @GetMapping("/observability/metrics")
                     public ResponseEntity<Map<String, Object>> getMetrics() {
                         Map<String, Object> metrics = new LinkedHashMap<>();
-                        %s
+                        List<?> services;
+                        try {
+                            services = rest.getForObject(registryUrl + "/services", List.class);
+                            if (services == null) services = java.util.Collections.emptyList();
+                        } catch (Exception e) {
+                            return ResponseEntity.ok(Map.of(
+                                    "error", "Registry unavailable: " + e.getMessage()));
+                        }
+                        for (Object raw : services) {
+                            if (!(raw instanceof Map<?, ?> svc)) continue;
+                            Object name = svc.get("name");
+                            Object host = svc.get("host");
+                            Object port = svc.get("port");
+                            if (name == null || host == null || !(port instanceof Number)) continue;
+                            String base = "http://" + host + ":" + ((Number) port).intValue();
+                            metrics.put(String.valueOf(name),
+                                    fetchServiceMetrics(String.valueOf(name),
+                                            base + "/actuator/health",
+                                            base + "/actuator/metrics/http.server.requests"));
+                        }
                         return ResponseEntity.ok(metrics);
                     }
 
@@ -979,6 +1014,6 @@ class AdminObservabilityGenerator {
                         return snap;
                     }
                 }
-                """.formatted(healthChecks.toString()));
+                """);
     }
 }

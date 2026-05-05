@@ -45,6 +45,29 @@ class ConfigurationGeneratorSpec extends Specification {
         new GenerationContext(m, serviceRoot, serviceRoot, all, FractalxConfig.defaults(), [])
     }
 
+    /** Builds a context with a custom flyway setup: project-level flag + optional per-service override. */
+    private GenerationContext ctxWithFlyway(FractalModule m, boolean projectFlyway,
+                                             Map<String, Boolean> svcFlyway = [:]) {
+        def resourcesDir = serviceRoot.resolve("src/main/resources")
+        Files.createDirectories(resourcesDir)
+
+        def features = new FractalxConfig.FeatureFlags(true, true, true, true, true, true, true, true, projectFlyway)
+        Map<String, FractalxConfig.ServiceOverride> overrides = svcFlyway.collectEntries { name, flag ->
+            [name, new FractalxConfig.ServiceOverride(0, true, null, null, null, null, flag)]
+        }
+        def d = FractalxConfig.defaults()
+        def cfg = new FractalxConfig(
+                d.registryUrl(), d.loggerUrl(), d.otelEndpoint(),
+                d.gatewayPort(), d.corsAllowedOrigins(), d.oauth2JwksUri(),
+                d.adminPort(), overrides, d.basePackage(), d.javaVersion(),
+                d.initialServiceVersion(), d.springBootVersion(), d.springCloudVersion(),
+                d.registryPort(), d.loggerPort(), d.sagaPort(),
+                d.jaegerUiPort(), d.jaegerOtlpPort(),
+                d.resilience(), d.dockerImages(), features, d.naming()
+        )
+        new GenerationContext(m, serviceRoot, serviceRoot, [m], cfg, [])
+    }
+
     private String base()   { Files.readString(serviceRoot.resolve("src/main/resources/application.yml")) }
     private String dev()    { Files.readString(serviceRoot.resolve("src/main/resources/application-dev.yml")) }
     private String docker() { Files.readString(serviceRoot.resolve("src/main/resources/application-docker.yml")) }
@@ -235,5 +258,80 @@ class ConfigurationGeneratorSpec extends Specification {
 
         then:
         docker().contains("logger-service")
+    }
+
+    // ── Flyway enable/disable tests ───────────────────────────────────────────
+
+    def "dev YAML contains flyway block when distributed-data is enabled (project default)"() {
+        when:
+        generator.generate(ctx(moduleNoDeps))
+
+        then:
+        def c = dev()
+        c.contains("flyway:")
+        c.contains("enabled: true")
+        c.contains("classpath:db/migration")
+    }
+
+    def "dev YAML omits flyway block when distributed-data is false"() {
+        when:
+        generator.generate(ctxWithFlyway(moduleNoDeps, false))
+
+        then:
+        !dev().contains("flyway:")
+    }
+
+    def "dev YAML uses ddl-auto: update when distributed-data is false"() {
+        when:
+        generator.generate(ctxWithFlyway(moduleNoDeps, false))
+
+        then:
+        dev().contains("ddl-auto: update")
+    }
+
+    def "docker YAML contains flyway block when distributed-data is enabled"() {
+        when:
+        generator.generate(ctx(moduleNoDeps))
+
+        then:
+        def c = docker()
+        c.contains("flyway:")
+        c.contains("enabled: true")
+    }
+
+    def "docker YAML omits flyway block when distributed-data is false"() {
+        when:
+        generator.generate(ctxWithFlyway(moduleNoDeps, false))
+
+        then:
+        !docker().contains("flyway:")
+    }
+
+    def "per-service flyway.enabled: false overrides project-level true"() {
+        when:
+        generator.generate(ctxWithFlyway(moduleNoDeps, true, ["simple-service": false]))
+
+        then:
+        !dev().contains("flyway:")
+        !docker().contains("flyway:")
+    }
+
+    def "per-service flyway.enabled: true overrides project-level false"() {
+        when:
+        generator.generate(ctxWithFlyway(moduleNoDeps, false, ["simple-service": true]))
+
+        then:
+        def d = dev()
+        d.contains("flyway:")
+        d.contains("enabled: true")
+    }
+
+    def "service with no per-service override inherits project default"() {
+        when:
+        // project=false, override map is empty → should inherit false
+        generator.generate(ctxWithFlyway(moduleNoDeps, false, [:]))
+
+        then:
+        !dev().contains("flyway:")
     }
 }

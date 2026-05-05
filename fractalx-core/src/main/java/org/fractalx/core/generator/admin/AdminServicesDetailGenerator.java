@@ -57,7 +57,7 @@ class AdminServicesDetailGenerator {
         }
         // Always-present infra services
         entries.append("        new ServiceMeta(\"fractalx-registry\", 8761, 0, \"infrastructure\", List.of(), \"\", \"\"),\n");
-        entries.append("        new ServiceMeta(\"api-gateway\",       9999, 0, \"infrastructure\", List.of(), \"\", \"\"),\n");
+        entries.append("        new ServiceMeta(\"fractalx-gateway\", 9999, 0, \"infrastructure\", List.of(), \"\", \"\"),\n");
         entries.append("        new ServiceMeta(\"admin-service\",     9090, 0, \"infrastructure\", List.of(), \"\", \"\"),\n");
         entries.append("        new ServiceMeta(\"logger-service\",    9099, 0, \"infrastructure\", List.of(), \"\", \"\")\n");
 
@@ -113,7 +113,7 @@ class AdminServicesDetailGenerator {
             initCalls.append("        addInitialRecord(\"fractalx-saga-orchestrator\");\n");
         }
         initCalls.append("        addInitialRecord(\"fractalx-registry\");\n");
-        initCalls.append("        addInitialRecord(\"api-gateway\");\n");
+        initCalls.append("        addInitialRecord(\"fractalx-gateway\");\n");
         initCalls.append("        addInitialRecord(\"admin-service\");\n");
         initCalls.append("        addInitialRecord(\"logger-service\");\n");
 

@@ -73,7 +73,8 @@ public class SagaOrchestratorGenerator {
         // ── Infrastructure files ─────────────────────────────────────────────
         writePom(serviceRoot, modules, config);
         writeApplicationClass(srcMainJava, basePackage);
-        writeApplicationYml(resourcesDir, modules, sagas);
+        writeApplicationYml(resourcesDir, modules, sagas, config);
+        writeApplicationDockerYml(resourcesDir, modules, sagas, config);
         writeFlywayMigration(resourcesDir);
 
         // ── Shared model ─────────────────────────────────────────────────────
@@ -124,6 +125,10 @@ public class SagaOrchestratorGenerator {
         writeFile(basePkg, "OtelConfig.java",               buildOtelConfig(basePackage));
         writeFile(basePkg, "CorrelationTracingConfig.java", buildCorrelationTracingConfig(basePackage));
         writeFile(basePkg, "TracingExclusionConfig.java",   buildTracingExclusionConfig(basePackage));
+
+        // ── Self-registration with fractalx-registry ─────────────────────────
+        writeFile(basePkg, "SagaRegistryClient.java",        buildSagaRegistryClient(basePackage));
+        writeFile(basePkg, "SagaServiceRegistration.java",   buildSagaServiceRegistration(basePackage));
 
         // ── README ────────────────────────────────────────────────────────────
         new DataReadmeGenerator().generateSagaOrchestratorReadme(sagas, modules, serviceRoot);
@@ -190,15 +195,7 @@ public class SagaOrchestratorGenerator {
                             <artifactId>fractalx-runtime</artifactId>
                             <version>__FX_VERSION__</version>__CLOUD_EXCLUSIONS__
                         </dependency>
-                        <dependency>
-                            <groupId>com.h2database</groupId>
-                            <artifactId>h2</artifactId>
-                            <scope>runtime</scope>
-                        </dependency>
-                        <dependency>
-                            <groupId>org.flywaydb</groupId>
-                            <artifactId>flyway-core</artifactId>
-                        </dependency>
+                __DB_DEPS__
                         <dependency>
                             <groupId>org.springframework.boot</groupId>
                             <artifactId>spring-boot-starter-actuator</artifactId>
@@ -235,11 +232,24 @@ public class SagaOrchestratorGenerator {
                                 <groupId>org.springframework.boot</groupId>
                                 <artifactId>spring-boot-maven-plugin</artifactId>
                                 <version>${spring-boot.version}</version>
+                                <executions>
+                                    <execution>
+                                        <goals>
+                                            <goal>repackage</goal>
+                                        </goals>
+                                    </execution>
+                                </executions>
+                                <configuration>
+                                    <mainClass>__BASE_GROUP__.sagaorchestrator.SagaOrchestratorApplication</mainClass>
+                                </configuration>
                             </plugin>
                         </plugins>
                     </build>
                 </project>
                 """);
+        FractalxConfig.ServiceOverride pomOverride = config.serviceOverrides().get("fractalx-saga-orchestrator");
+        String dbDeps = buildSagaDbDeps(pomOverride, config);
+
         writeFile(serviceRoot, "pom.xml",
                 sb.toString()
                         .replace("__SVC_VERSION__", config.initialServiceVersion())
@@ -247,6 +257,7 @@ public class SagaOrchestratorGenerator {
                         .replace("__FX_VERSION__", FractalxVersion.get())
                         .replace("__BASE_GROUP__", config.effectiveBasePackage())
                         .replace("__SB_VERSION__", config.springBootVersion())
+                        .replace("__DB_DEPS__", dbDeps)
                         .replace("__CLOUD_EXCLUSIONS__", SpringBootVersionUtil.isBoot4Plus(config.springBootVersion())
                                 ? "\n                            <exclusions>\n"
                                 + "                                <exclusion>\n"
@@ -259,6 +270,58 @@ public class SagaOrchestratorGenerator {
                                 + "                                </exclusion>\n"
                                 + "                            </exclusions>"
                                 : ""));
+    }
+
+    private static String buildSagaDbDeps(FractalxConfig.ServiceOverride override, FractalxConfig config) {
+        boolean useFlyway = override != null
+                ? override.effectiveFlyway(config.features().distributedData())
+                : config.features().distributedData();
+        String flywayDep = useFlyway
+                ? "        <dependency>\n"
+                + "            <groupId>org.flywaydb</groupId>\n"
+                + "            <artifactId>flyway-core</artifactId>\n"
+                + "        </dependency>\n"
+                : "";
+
+        if (override == null || !override.hasDatasource() || override.isH2()) {
+            return "        <dependency>\n"
+                    + "            <groupId>com.h2database</groupId>\n"
+                    + "            <artifactId>h2</artifactId>\n"
+                    + "            <scope>runtime</scope>\n"
+                    + "        </dependency>\n"
+                    + flywayDep;
+        }
+
+        String url = override.datasourceUrl();
+        if (url.contains("mysql")) {
+            String mysqlFlywayDep = useFlyway
+                    ? "        <dependency>\n"
+                    + "            <groupId>org.flywaydb</groupId>\n"
+                    + "            <artifactId>flyway-mysql</artifactId>\n"
+                    + "        </dependency>\n"
+                    : "";
+            return "        <dependency>\n"
+                    + "            <groupId>com.mysql</groupId>\n"
+                    + "            <artifactId>mysql-connector-j</artifactId>\n"
+                    + "            <scope>runtime</scope>\n"
+                    + "        </dependency>\n"
+                    + flywayDep
+                    + mysqlFlywayDep;
+        } else if (url.contains("postgresql")) {
+            return "        <dependency>\n"
+                    + "            <groupId>org.postgresql</groupId>\n"
+                    + "            <artifactId>postgresql</artifactId>\n"
+                    + "            <scope>runtime</scope>\n"
+                    + "        </dependency>\n"
+                    + flywayDep;
+        }
+        // Unknown driver — keep H2 as safe fallback
+        return "        <dependency>\n"
+                + "            <groupId>com.h2database</groupId>\n"
+                + "            <artifactId>h2</artifactId>\n"
+                + "            <scope>runtime</scope>\n"
+                + "        </dependency>\n"
+                + flywayDep;
     }
 
     private void writeApplicationClass(Path srcMainJava, String basePackage) throws IOException {
@@ -303,7 +366,8 @@ public class SagaOrchestratorGenerator {
 
     private void writeApplicationYml(Path resourcesDir,
                                       List<FractalModule> modules,
-                                      List<SagaDefinition> sagas) throws IOException {
+                                      List<SagaDefinition> sagas,
+                                      FractalxConfig config) throws IOException {
         // Collect the set of service names that participate in any saga
         Set<String> participatingServices = new java.util.LinkedHashSet<>();
         for (SagaDefinition saga : sagas) {
@@ -339,6 +403,54 @@ public class SagaOrchestratorGenerator {
                     .append("_OWNER_URL:http://localhost:").append(ownerPort).append("}\n");
         }
 
+        // Build datasource block from FractalxConfig override, falling back to H2 defaults
+        FractalxConfig.ServiceOverride sagaOverride = config.serviceOverrides().get("fractalx-saga-orchestrator");
+        final String datasourceBlock;
+        final String h2ConsoleBlock;
+        final String flywayBlock;
+        if (sagaOverride != null && sagaOverride.hasDatasource()) {
+            String driver = sagaOverride.datasourceDriver() != null
+                    ? sagaOverride.datasourceDriver()
+                    : (sagaOverride.datasourceUrl().contains("mysql") ? "com.mysql.cj.jdbc.Driver"
+                       : sagaOverride.datasourceUrl().contains("postgresql") ? "org.postgresql.Driver"
+                       : "org.h2.Driver");
+            boolean useFlyway = sagaOverride.effectiveFlyway(config.features().distributedData());
+            String ddlAuto = useFlyway ? "validate" : "update";
+            datasourceBlock = "  datasource:\n"
+                    + "    url: " + sagaOverride.datasourceUrl() + "\n"
+                    + "    driver-class-name: " + driver + "\n"
+                    + "    username: " + sagaOverride.datasourceUsername() + "\n"
+                    + "    password: " + (sagaOverride.datasourcePassword() != null ? sagaOverride.datasourcePassword() : "") + "\n"
+                    + "    hikari:\n"
+                    + "      maximum-pool-size: 5\n"
+                    + "      minimum-idle: 2\n"
+                    + "  jpa:\n"
+                    + "    hibernate:\n"
+                    + "      ddl-auto: " + ddlAuto + "\n"
+                    + "    show-sql: false\n";
+            h2ConsoleBlock = sagaOverride.isH2()
+                    ? "  h2:\n    console:\n      enabled: true\n"
+                    : "";
+            flywayBlock = useFlyway
+                    ? "  flyway:\n    enabled: true\n    locations: classpath:db/migration\n"
+                    : "  flyway:\n    enabled: false\n";
+        } else {
+            datasourceBlock = "  datasource:\n"
+                    + "    url: jdbc:h2:mem:saga_db\n"
+                    + "    driver-class-name: org.h2.Driver\n"
+                    + "    username: sa\n"
+                    + "    password:\n"
+                    + "    hikari:\n"
+                    + "      maximum-pool-size: 5\n"
+                    + "      minimum-idle: 2\n"
+                    + "  jpa:\n"
+                    + "    hibernate:\n"
+                    + "      ddl-auto: validate\n"
+                    + "    show-sql: false\n";
+            h2ConsoleBlock = "  h2:\n    console:\n      enabled: true\n";
+            flywayBlock = "  flyway:\n    enabled: true\n    locations: classpath:db/migration\n";
+        }
+
         writeFile(resourcesDir, "application.yml",
                 "spring:\n"
                 + "  application:\n"
@@ -349,29 +461,18 @@ public class SagaOrchestratorGenerator {
                 + "      # FractalX services use gRPC/NetScope, not Feign. Excluding prevents startup failure\n"
                 + "      # when spring-cloud-context is not on the classpath (e.g. Spring Boot 4.x).\n"
                 + "      - org.springframework.cloud.openfeign.FeignAutoConfiguration\n"
-                + "  datasource:\n"
-                + "    url: jdbc:h2:mem:saga_db\n"
-                + "    driver-class-name: org.h2.Driver\n"
-                + "    username: sa\n"
-                + "    password:\n"
-                + "    hikari:\n"
-                + "      maximum-pool-size: 5\n"
-                + "      minimum-idle: 2\n"
-                + "  jpa:\n"
-                + "    hibernate:\n"
-                + "      ddl-auto: validate\n"
-                + "    show-sql: false\n"
-                + "  h2:\n"
-                + "    console:\n"
-                + "      enabled: true\n"
-                + "  flyway:\n"
-                + "    enabled: true\n"
-                + "    locations: classpath:db/migration\n"
+                + datasourceBlock
+                + h2ConsoleBlock
+                + flywayBlock
                 + "\n"
                 + "server:\n"
                 + "  port: 8099\n"
                 + "\n"
                 + "fractalx:\n"
+                + "  registry:\n"
+                + "    url: ${FRACTALX_REGISTRY_URL:http://localhost:8761}\n"
+                + "    enabled: true\n"
+                + "    host: ${FRACTALX_REGISTRY_HOST:localhost}\n"
                 + "  observability:\n"
                 + "    tracing: true\n"
                 + "    metrics: true\n"
@@ -409,6 +510,104 @@ public class SagaOrchestratorGenerator {
                 + "  level:\n"
                 + "    org.fractalx: INFO\n"
                 + "    org.fractalx.netscope: DEBUG\n");
+    }
+
+    private void writeApplicationDockerYml(Path resourcesDir,
+                                             List<FractalModule> modules,
+                                             List<SagaDefinition> sagas,
+                                             FractalxConfig config) throws IOException {
+        FractalxConfig.ServiceOverride sagaOverride = config.serviceOverrides().get("fractalx-saga-orchestrator");
+
+        // Build datasource block with env var placeholders and Docker-friendly default URLs
+        final String datasourceBlock;
+        final String h2ConsoleBlock;
+        final String flywayBlock;
+
+        if (sagaOverride != null && sagaOverride.hasDatasource()) {
+            String devUrl = sagaOverride.datasourceUrl();
+            String dockerUrl = toDockerUrl(devUrl);
+            String driver = sagaOverride.datasourceDriver() != null
+                    ? sagaOverride.datasourceDriver()
+                    : (devUrl.contains("mysql") ? "com.mysql.cj.jdbc.Driver"
+                       : devUrl.contains("postgresql") ? "org.postgresql.Driver"
+                       : "org.h2.Driver");
+            String username = sagaOverride.datasourceUsername() != null ? sagaOverride.datasourceUsername() : "sa";
+            String password = sagaOverride.datasourcePassword() != null ? sagaOverride.datasourcePassword() : "";
+            boolean useFlyway = sagaOverride.effectiveFlyway(config.features().distributedData());
+            String ddlAuto = useFlyway ? "validate" : "update";
+            datasourceBlock = "  datasource:\n"
+                    + "    url: ${DB_URL:" + dockerUrl + "}\n"
+                    + "    driver-class-name: " + driver + "\n"
+                    + "    username: ${DB_USERNAME:" + username + "}\n"
+                    + "    password: ${DB_PASSWORD:" + password + "}\n"
+                    + "    hikari:\n"
+                    + "      maximum-pool-size: 5\n"
+                    + "      minimum-idle: 2\n"
+                    + "  jpa:\n"
+                    + "    hibernate:\n"
+                    + "      ddl-auto: " + ddlAuto + "\n"
+                    + "    show-sql: false\n";
+            h2ConsoleBlock = sagaOverride.isH2() ? "  h2:\n    console:\n      enabled: false\n" : "";
+            flywayBlock = useFlyway
+                    ? "  flyway:\n    enabled: true\n    locations: classpath:db/migration\n"
+                    : "  flyway:\n    enabled: false\n";
+        } else {
+            // Default H2 — env var fallback still useful for overriding in Docker
+            datasourceBlock = "  datasource:\n"
+                    + "    url: ${DB_URL:jdbc:h2:mem:saga_db}\n"
+                    + "    driver-class-name: org.h2.Driver\n"
+                    + "    username: ${DB_USERNAME:sa}\n"
+                    + "    password: ${DB_PASSWORD:}\n"
+                    + "    hikari:\n"
+                    + "      maximum-pool-size: 5\n"
+                    + "      minimum-idle: 2\n"
+                    + "  jpa:\n"
+                    + "    hibernate:\n"
+                    + "      ddl-auto: validate\n"
+                    + "    show-sql: false\n";
+            h2ConsoleBlock = "  h2:\n    console:\n      enabled: false\n";
+            flywayBlock = "  flyway:\n    enabled: true\n    locations: classpath:db/migration\n";
+        }
+
+        // Build netscope servers block using env var placeholders for Docker hostname resolution
+        Set<String> participatingServices = new java.util.LinkedHashSet<>();
+        for (SagaDefinition saga : sagas) {
+            for (SagaStep step : saga.getSteps()) {
+                participatingServices.add(step.getTargetServiceName());
+            }
+        }
+        StringBuilder serversBlock = new StringBuilder();
+        for (String serviceName : participatingServices) {
+            int grpcPort = modules.stream()
+                    .filter(m -> m.getServiceName().equals(serviceName))
+                    .map(FractalModule::grpcPort)
+                    .findFirst()
+                    .orElse(19000);
+            String envPrefix = serviceName.toUpperCase().replace("-", "_");
+            serversBlock.append("      ").append(serviceName).append(":\n");
+            serversBlock.append("        host: ${").append(envPrefix).append("_HOST:").append(serviceName).append("}\n");
+            serversBlock.append("        port: ${").append(envPrefix).append("_GRPC_PORT:").append(grpcPort).append("}\n");
+        }
+
+        writeFile(resourcesDir, "application-docker.yml",
+                "# Docker profile — datasource and peer hosts from environment variables\n"
+                + "spring:\n"
+                + datasourceBlock
+                + h2ConsoleBlock
+                + flywayBlock
+                + "\n"
+                + "netscope:\n"
+                + "  client:\n"
+                + "    servers:" + (serversBlock.length() == 0 ? " {}\n" : "\n" + serversBlock));
+    }
+
+    /** Converts a localhost JDBC URL to a Docker-friendly URL by replacing the hostname. */
+    private static String toDockerUrl(String url) {
+        if (url == null) return url;
+        if (url.contains("mysql"))      return url.replace("localhost", "mysql");
+        if (url.contains("postgresql")) return url.replace("localhost", "postgres");
+        if (url.contains("h2"))         return url; // H2 is in-memory, no host
+        return url.replace("localhost", "db");
     }
 
     private void writeFlywayMigration(Path resourcesDir) throws IOException {
@@ -1560,6 +1759,133 @@ public class SagaOrchestratorGenerator {
                     @Bean
                     public ObservationPredicate noScheduledTaskTracing() {
                         return (name, context) -> !name.startsWith("tasks.scheduled");
+                    }
+                }
+                """.replace("__BASE_PKG__", basePackage);
+    }
+
+    private String buildSagaRegistryClient(String basePackage) {
+        return """
+                package __BASE_PKG__;
+
+                import org.slf4j.Logger;
+                import org.slf4j.LoggerFactory;
+                import org.springframework.beans.factory.annotation.Value;
+                import org.springframework.stereotype.Component;
+                import org.springframework.web.client.RestTemplate;
+
+                import java.util.Map;
+
+                /**
+                 * Self-registration client for the FractalX Registry. Mirrors the client
+                 * generated for regular microservices so the saga orchestrator shows up
+                 * in {@code GET /services} alongside everything else.
+                 */
+                @Component
+                public class SagaRegistryClient {
+
+                    private static final Logger log = LoggerFactory.getLogger(SagaRegistryClient.class);
+
+                    @Value("${fractalx.registry.url:http://localhost:8761}")
+                    private String registryUrl;
+
+                    private final RestTemplate restTemplate = new RestTemplate();
+
+                    public void register(String name, String host, int port, String healthUrl) {
+                        try {
+                            Map<String, Object> payload = Map.of(
+                                    "name", name,
+                                    "host", host,
+                                    "port", port,
+                                    "grpcPort", 0,
+                                    "healthUrl", healthUrl
+                            );
+                            restTemplate.postForObject(registryUrl + "/services", payload, Object.class);
+                            log.info("Registered with fractalx-registry: {} at {}:{}", name, host, port);
+                        } catch (Exception e) {
+                            log.warn("Could not register with fractalx-registry at '{}': {} "
+                                    + "— verify that 'fractalx.registry.url' is correctly set "
+                                    + "and that fractalx-registry is running.", registryUrl, e.getMessage());
+                        }
+                    }
+
+                    public void deregister(String name) {
+                        try {
+                            restTemplate.delete(registryUrl + "/services/" + name + "/deregister");
+                            log.info("Deregistered from fractalx-registry: {}", name);
+                        } catch (Exception e) {
+                            log.warn("Could not deregister from fractalx-registry: {}", e.getMessage());
+                        }
+                    }
+
+                    public boolean heartbeat(String name) {
+                        try {
+                            restTemplate.postForObject(registryUrl + "/services/" + name + "/heartbeat",
+                                    null, Void.class);
+                            return true;
+                        } catch (Exception e) {
+                            log.trace("Heartbeat failed for {}: {}", name, e.getMessage());
+                            return false;
+                        }
+                    }
+                }
+                """.replace("__BASE_PKG__", basePackage);
+    }
+
+    private String buildSagaServiceRegistration(String basePackage) {
+        return """
+                package __BASE_PKG__;
+
+                import jakarta.annotation.PostConstruct;
+                import jakarta.annotation.PreDestroy;
+                import org.springframework.beans.factory.annotation.Value;
+                import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+                import org.springframework.scheduling.annotation.Scheduled;
+                import org.springframework.stereotype.Component;
+
+                /**
+                 * Auto-registers the saga orchestrator with fractalx-registry on startup,
+                 * sends a heartbeat every 5 seconds, and deregisters on shutdown. The
+                 * {@code FRACTALX_REGISTRY_HOST} env var controls the host advertised in
+                 * the registration payload — Docker compose sets it to the container name
+                 * so peers can reach the orchestrator inside the Docker network.
+                 */
+                @Component
+                @ConditionalOnProperty(name = "fractalx.registry.enabled", havingValue = "true", matchIfMissing = true)
+                public class SagaServiceRegistration {
+
+                    private final SagaRegistryClient registryClient;
+
+                    @Value("${spring.application.name:fractalx-saga-orchestrator}")
+                    private String serviceName;
+
+                    @Value("${fractalx.registry.host:localhost}")
+                    private String serviceHost;
+
+                    @Value("${server.port:8099}")
+                    private int httpPort;
+
+                    public SagaServiceRegistration(SagaRegistryClient registryClient) {
+                        this.registryClient = registryClient;
+                    }
+
+                    @PostConstruct
+                    public void onStartup() {
+                        String healthUrl = "http://" + serviceHost + ":" + httpPort + "/actuator/health";
+                        registryClient.register(serviceName, serviceHost, httpPort, healthUrl);
+                    }
+
+                    @Scheduled(fixedDelay = 5_000)
+                    public void sendHeartbeat() {
+                        boolean ok = registryClient.heartbeat(serviceName);
+                        if (!ok) {
+                            onStartup();
+                        }
+                    }
+
+                    @PreDestroy
+                    public void onShutdown() {
+                        registryClient.deregister(serviceName);
                     }
                 }
                 """.replace("__BASE_PKG__", basePackage);

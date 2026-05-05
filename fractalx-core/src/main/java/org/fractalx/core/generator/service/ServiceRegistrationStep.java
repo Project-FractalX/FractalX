@@ -185,7 +185,7 @@ public class ServiceRegistrationStep implements ServiceFileGenerator {
                  * Prevents {@code BindException} from crashing the context when another instance
                  * of this service is still alive (e.g. leftover from a per-service smoke-test run).
                  */
-                @Configuration
+                @Configuration(proxyBeanMethods = false)
                 public class NetScopeGrpcFaultTolerance
                         implements BeanDefinitionRegistryPostProcessor, EnvironmentAware {
 
