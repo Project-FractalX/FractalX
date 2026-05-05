@@ -43,7 +43,8 @@ public class CodeTransformer implements ServiceFileGenerator {
         log.info("Transforming code for: {}", context.getModule().getServiceName());
 
         annotationRemover.processServiceDirectory(context.getServiceRoot());
-        relationshipDecoupler.transform(context.getServiceRoot(), context.getModule(), context.servicePackage());
+        relationshipDecoupler.transform(context.getServiceRoot(), context.getModule(), context.servicePackage(),
+                context.getDependencyGraph());
         importPreserver.generate(context);
         importCleaner.generate(context);
 

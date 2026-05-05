@@ -114,17 +114,10 @@ public class GatewayRouteLocatorGenerator {
             }
         }
 
-        // Step 4: emit general routes (name-heuristic preserved for backward compatibility)
+        // Step 4: emit general routes (pluralization via EnglishPluralizer)
         for (FractalModule m : modules) {
             String base = m.getServiceName().replace("-service", "");
-            String plural;
-            if (base.endsWith("y")) {
-                plural = base.substring(0, base.length() - 1) + "ies";
-            } else if (base.endsWith("s") || base.endsWith("sh") || base.endsWith("ch")) {
-                plural = base + "es";
-            } else {
-                plural = base + "s";
-            }
+            String plural = pluralizer.pluralize(base);
 
             staticRoutesBuilder.append("        // ").append(m.getServiceName()).append(" static route\n");
             staticRoutesBuilder.append("        routeBuilder.route(\"").append(m.getServiceName()).append("-static\",\n");
@@ -283,14 +276,24 @@ public class GatewayRouteLocatorGenerator {
                     }
 
                     private String toPathPlural(String serviceName) {
-                        String path = serviceName.replace("-service", "");
-                        if (path.endsWith("y")) {
-                            return path.substring(0, path.length() - 1) + "ies";
-                        } else if (path.endsWith("s") || path.endsWith("sh") || path.endsWith("ch")) {
-                            return path + "es";
-                        } else {
-                            return path + "s";
+                        String word = serviceName.replace("-service", "");
+                        String lower = word.toLowerCase();
+                        // Consonant + y → ies
+                        if (lower.endsWith("y") && lower.length() > 1
+                                && "aeiou".indexOf(lower.charAt(lower.length() - 2)) < 0) {
+                            return lower.substring(0, lower.length() - 1) + "ies";
                         }
+                        // -f → -ves
+                        if (lower.endsWith("f") && lower.length() > 1) {
+                            return lower.substring(0, lower.length() - 1) + "ves";
+                        }
+                        // Sibilants → -es
+                        if (lower.endsWith("s") || lower.endsWith("x") || lower.endsWith("z")
+                                || lower.endsWith("ch") || lower.endsWith("sh")) {
+                            return lower + "es";
+                        }
+                        // Default -s
+                        return lower + "s";
                     }
                 }
                 """;

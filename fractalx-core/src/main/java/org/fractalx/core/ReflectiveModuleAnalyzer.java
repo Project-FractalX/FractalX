@@ -3,7 +3,6 @@ package org.fractalx.core;
 import com.github.javaparser.JavaParser;
 import org.fractalx.annotations.DecomposableModule;
 import org.fractalx.core.model.FractalModule;
-import org.fractalx.core.naming.NameResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,7 +41,10 @@ public class ReflectiveModuleAnalyzer {
 
     private static final Logger log = LoggerFactory.getLogger(ReflectiveModuleAnalyzer.class);
     private final JavaParser javaParser = new JavaParser();
-    private final NameResolver nameResolver = NameResolver.defaults();
+
+    /** Spring stereotype annotations that identify Spring-managed bean types. */
+    private static final Set<String> SPRING_STEREOTYPES = Set.of(
+            "Service", "Component", "Repository", "Controller", "RestController", "Configuration");
 
     /** Set during {@link #analyzeProject} so helper methods can load package-sibling classes. */
     private URLClassLoader moduleClassLoader;
@@ -243,10 +245,9 @@ public class ReflectiveModuleAnalyzer {
                           for (java.lang.reflect.Field f : c.getDeclaredFields()) {
                               try {
                                   String simple = f.getType().getSimpleName();
-                                  // Use configurable dependency type suffixes (default: Service, Client,
-                                  // Gateway, Bus, Processor) to avoid treating entity/model fields
-                                  // (e.g. Customer inside Order) as cross-module service deps.
-                                  if (nameResolver.isDependencyType(simple)
+                                  // Structural: check if the field's declared type has a Spring
+                                  // stereotype annotation (e.g. @Service, @Component, @Repository)
+                                  if (hasSpringStereotype(f.getType())
                                           && !localTypes.contains(simple)) {
                                       deps.add(simple);
                                       log.debug("Field dep '{}' found in {}", simple, fqn);
@@ -267,10 +268,14 @@ public class ReflectiveModuleAnalyzer {
     /**
      * JavaParser-based field scan: mirrors {@code ModuleAnalyzer.findDependencies()} logic.
      * Walks {@code .java} files under {@code sourceRoot/<packagePath>} and collects field types
-     * ending in "Service" or "Client" that are not local module types.
+     * that are Spring-managed beans (structural annotation check) and not local module types.
      */
     private void scanSourceFieldsForDeps(String modulePkg, Path sourceRoot,
                                           Set<String> localTypes, Set<String> deps) {
+        // Build annotation index from the entire source root — needed to check if
+        // a field's type (which may live in a different module) has @Service etc.
+        Set<String> springBeanTypes = buildSourceBeanTypeIndex(sourceRoot);
+
         Path pkgDir = sourceRoot.resolve(modulePkg.replace('.', '/'));
         if (!Files.isDirectory(pkgDir)) return;
 
@@ -282,7 +287,7 @@ public class ReflectiveModuleAnalyzer {
                               cu.findAll(com.github.javaparser.ast.body.FieldDeclaration.class)
                                 .forEach(field -> {
                                     String t = field.getCommonType().asString();
-                                    if (nameResolver.isDependencyType(t)
+                                    if (springBeanTypes.contains(t)
                                             && !localTypes.contains(t)) {
                                         deps.add(t);
                                         log.debug("Source field dep '{}' found in {}",
@@ -297,6 +302,32 @@ public class ReflectiveModuleAnalyzer {
         } catch (IOException e) {
             log.debug("Could not walk source package dir {}: {}", pkgDir, e.getMessage());
         }
+    }
+
+    /**
+     * Builds a set of simple type names that have Spring stereotype annotations from source files.
+     */
+    private Set<String> buildSourceBeanTypeIndex(Path sourceRoot) {
+        Set<String> beanTypes = new HashSet<>();
+        try (var stream = Files.walk(sourceRoot)) {
+            stream.filter(p -> p.toString().endsWith(".java"))
+                  .forEach(javaFile -> {
+                      try {
+                          javaParser.parse(javaFile).getResult().ifPresent(cu ->
+                              cu.findAll(com.github.javaparser.ast.body.ClassOrInterfaceDeclaration.class)
+                                .forEach(cls -> {
+                                    boolean isBean = cls.getAnnotations().stream()
+                                            .anyMatch(a -> SPRING_STEREOTYPES.contains(a.getNameAsString()));
+                                    if (isBean) beanTypes.add(cls.getNameAsString());
+                                }));
+                      } catch (IOException e) {
+                          log.debug("Could not parse {} for bean index: {}", javaFile, e.getMessage());
+                      }
+                  });
+        } catch (IOException e) {
+            log.debug("Could not walk source root for bean index: {}", e.getMessage());
+        }
+        return beanTypes;
     }
 
     /** Returns the simple names of all top-level classes in {@code pkg}'s directory. */
@@ -350,6 +381,24 @@ public class ReflectiveModuleAnalyzer {
                 .replace('/', '.')
                 .replace('\\', '.')
                 .replace(".class", "");
+    }
+
+    /**
+     * Returns {@code true} if the given class has a Spring stereotype annotation.
+     * Used in strategy 2 (reflection-based field scan) to structurally identify
+     * cross-module dependencies by annotation rather than naming convention.
+     */
+    private static boolean hasSpringStereotype(Class<?> type) {
+        try {
+            for (java.lang.annotation.Annotation a : type.getAnnotations()) {
+                if (SPRING_STEREOTYPES.contains(a.annotationType().getSimpleName())) {
+                    return true;
+                }
+            }
+        } catch (Throwable t) {
+            // Annotation class not on classpath — cannot determine structurally
+        }
+        return false;
     }
 
     /**

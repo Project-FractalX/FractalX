@@ -150,6 +150,13 @@ class ModuleAnalyzerSpec extends Specification {
 
     def "field injection of a cross-module Service type is detected as dependency"() {
         given:
+        // The referenced type must exist in source with @Service annotation
+        writeJava("com/example/order/OrderService.java", """
+            package com.example.order;
+            import org.springframework.stereotype.Service;
+            @Service
+            public class OrderService {}
+        """)
         writeJava("com/example/payment/PaymentModule.java", """
             package com.example.payment;
             import org.fractalx.annotations.DecomposableModule;
@@ -167,8 +174,15 @@ class ModuleAnalyzerSpec extends Specification {
         modules[0].dependencies.contains("OrderService")
     }
 
-    def "field injection of a cross-module Client type is detected as dependency"() {
+    def "field injection of a cross-module Component type is detected as dependency"() {
         given:
+        // The referenced type must exist in source with @Component annotation
+        writeJava("com/example/payment/PaymentClient.java", """
+            package com.example.payment;
+            import org.springframework.stereotype.Component;
+            @Component
+            public class PaymentClient {}
+        """)
         writeJava("com/example/order/OrderModule.java", """
             package com.example.order;
             import org.fractalx.annotations.DecomposableModule;
@@ -187,6 +201,13 @@ class ModuleAnalyzerSpec extends Specification {
 
     def "constructor parameter of a cross-module type is detected as dependency"() {
         given:
+        // The referenced type must exist in source with @Service annotation
+        writeJava("com/example/payment/PaymentService.java", """
+            package com.example.payment;
+            import org.springframework.stereotype.Service;
+            @Service
+            public class PaymentService {}
+        """)
         writeJava("com/example/order/OrderModule.java", """
             package com.example.order;
             import org.fractalx.annotations.DecomposableModule;
@@ -203,7 +224,7 @@ class ModuleAnalyzerSpec extends Specification {
         modules[0].dependencies.contains("PaymentService")
     }
 
-    def "fields NOT ending in Service or Client are NOT added to dependencies"() {
+    def "fields without Spring stereotype annotation are NOT added to dependencies"() {
         given:
         writeJava("com/example/order/OrderModule.java", """
             package com.example.order;

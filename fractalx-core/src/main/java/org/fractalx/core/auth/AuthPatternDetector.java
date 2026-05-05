@@ -9,7 +9,10 @@ import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.NameExpr;
-import com.github.javaparser.ast.expr.ObjectCreationExpr;
+import org.fractalx.core.graph.DependencyGraph;
+import org.fractalx.core.graph.GraphNode;
+import org.fractalx.core.naming.EnglishPluralizer;
+import org.fractalx.core.naming.NamingConventions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
@@ -51,10 +54,24 @@ public class AuthPatternDetector {
     private static final Set<String> RELATIONSHIP_ANNOTATIONS = Set.of(
             "OneToMany", "ManyToOne", "OneToOne", "ManyToMany", "Embedded", "EmbeddedId");
 
+    /** Path fragments that identify account-creation (registration) endpoints. */
+    private static final Set<String> REGISTRATION_PATHS = Set.of(
+            "/register", "/signup", "/sign-up", "/enroll", "/create-account");
+
+    private static final EnglishPluralizer PLURALIZER =
+            new EnglishPluralizer(NamingConventions.defaults().irregularPlurals());
+
     private final Path projectRoot;
+    private final DependencyGraph graph;
 
     public AuthPatternDetector(Path projectRoot) {
+        this(projectRoot, null);
+    }
+
+    /** Graph-aware constructor — uses structural queries for class-level checks. */
+    public AuthPatternDetector(Path projectRoot, DependencyGraph graph) {
         this.projectRoot = projectRoot;
+        this.graph = graph;
     }
 
     /**
@@ -140,40 +157,29 @@ public class AuthPatternDetector {
                     boolean isAuthClass = false;
 
                     // 1. @RestController with auth-related request mappings
-                    if (hasAnnotation(cls, "RestController")) {
-                        isAuthClass = cls.getAnnotations().stream()
-                                .anyMatch(this::isRequestMappingToAuth)
-                                || cls.getMethods().stream()
-                                   .anyMatch(m -> m.getAnnotations().stream()
-                                                  .anyMatch(this::isMappingToAuthLogin));
-                        // Also check method parameters for Spring Security types
+                    // Use graph for annotation check when available
+                    if (hasAnnotationStructural(cls, pkg, "RestController")) {
+                        String fqcn = pkg.isEmpty() ? cls.getNameAsString() : pkg + "." + cls.getNameAsString();
+                        isAuthClass = hasAuthMappings(cls, fqcn);
+                        // Check method parameters for Spring Security types (structural via graph)
                         if (!isAuthClass) {
-                            isAuthClass = cls.getMethods().stream().anyMatch(m ->
-                                    m.getParameters().stream().anyMatch(p -> {
-                                        String pType = p.getType().asString();
-                                        return pType.equals("Authentication")
-                                            || pType.equals("Principal")
-                                            || p.getAnnotations().stream()
-                                                .anyMatch(a -> a.getNameAsString().equals("AuthenticationPrincipal"));
-                                    }));
+                            isAuthClass = hasSecurityMethodParams(cls, fqcn);
                         }
                     }
 
                     // 2. @EnableWebSecurity configuration class
                     if (!isAuthClass) {
-                        isAuthClass = hasAnnotation(cls, "EnableWebSecurity");
+                        isAuthClass = hasAnnotationStructural(cls, pkg, "EnableWebSecurity");
                     }
 
-                    // 3. Class implements UserDetailsService
+                    // 3. Class implements UserDetailsService (structural check via graph or AST)
                     if (!isAuthClass) {
-                        isAuthClass = cls.getImplementedTypes().stream()
-                                .anyMatch(t -> t.getNameAsString().equals("UserDetailsService"));
+                        isAuthClass = implementsInterface(cls, pkg, "UserDetailsService");
                     }
 
-                    // 4. Class has a method returning SecurityFilterChain
+                    // 4. Class has a method returning SecurityFilterChain (structural via graph)
                     if (!isAuthClass) {
-                        isAuthClass = cls.getMethods().stream()
-                                .anyMatch(m -> m.getType().asString().equals("SecurityFilterChain"));
+                        isAuthClass = hasMethodReturningFilterChain(cls, pkg);
                     }
 
                     if (isAuthClass) {
@@ -184,21 +190,13 @@ public class AuthPatternDetector {
 
                 // ── Detect UserDetails entity ───────────────────────────────
                 if (userDetailsPkg.get() == null) {
-                    boolean implementsUD = cls.getImplementedTypes().stream()
-                            .anyMatch(t -> t.getNameAsString().equals("UserDetails"));
-                    if (implementsUD && hasAnnotation(cls, "Entity")) {
+                    boolean implementsUD = implementsInterface(cls, pkg, "UserDetails");
+                    if (implementsUD && hasAnnotationStructural(cls, pkg, "Entity")) {
                         userDetailsPkg.set(pkg);
-                        // Collect domain-specific fields that should propagate into JWT claims
-                        Map<String, String> fields = new HashMap<>();
-                        for (FieldDeclaration f : cls.getFields()) {
-                            if (f.getVariables().isEmpty()) continue;
-                            String fieldName = f.getVariables().get(0).getNameAsString();
-                            if (STANDARD_USER_FIELDS.contains(fieldName)) continue;
-                            boolean hasRelationship = f.getAnnotations().stream()
-                                    .anyMatch(a -> RELATIONSHIP_ANNOTATIONS.contains(a.getNameAsString()));
-                            if (hasRelationship) continue;
-                            fields.put(fieldName, f.getElementType().asString());
-                        }
+                        // Collect domain-specific fields that should propagate into JWT claims.
+                        // Structural approach: read .claim("X", ...) calls from the monolith's
+                        // token-generation code to know exactly which claims are set.
+                        Map<String, String> fields = extractDomainFields(cls);
                         domainFieldsRef.set(fields);
                         log.debug("UserDetails entity found in package {}, domainFields={}", pkg, fields.keySet());
                     }
@@ -218,6 +216,94 @@ public class AuthPatternDetector {
                       // Match simple name or fully-qualified (e.g. @jakarta.persistence.Entity)
                       return n.equals(name) || n.endsWith("." + name);
                   });
+    }
+
+    /**
+     * Checks for an annotation using the DependencyGraph (structural) when available,
+     * falling back to AST-based name matching.
+     */
+    private boolean hasAnnotationStructural(ClassOrInterfaceDeclaration cls, String pkg, String annotationName) {
+        if (graph != null) {
+            String fqcn = pkg.isEmpty() ? cls.getNameAsString() : pkg + "." + cls.getNameAsString();
+            var node = graph.node(fqcn);
+            if (node.isPresent()) return node.get().annotations().contains(annotationName);
+        }
+        return hasAnnotation(cls, annotationName);
+    }
+
+    /**
+     * Checks if a class implements a given interface using the DependencyGraph (structural)
+     * when available, falling back to AST-based name matching.
+     */
+    private boolean implementsInterface(ClassOrInterfaceDeclaration cls, String pkg, String interfaceName) {
+        if (graph != null) {
+            String fqcn = pkg.isEmpty() ? cls.getNameAsString() : pkg + "." + cls.getNameAsString();
+            var node = graph.node(fqcn);
+            if (node.isPresent()) return node.get().implementedInterfaces().contains(interfaceName);
+        }
+        return cls.getImplementedTypes().stream()
+                .anyMatch(t -> t.getNameAsString().equals(interfaceName));
+    }
+
+    /** Checks for auth-related request mapping annotations — via graph method-level data or AST. */
+    private boolean hasAuthMappings(ClassOrInterfaceDeclaration cls, String fqcn) {
+        if (graph != null) {
+            var node = graph.node(fqcn);
+            if (node.isPresent()) {
+                return node.get().methods().stream().anyMatch(m ->
+                        m.annotations().stream().anyMatch(a ->
+                                isHttpMappingAnnotation(a) && m.stringLiterals().stream()
+                                        .anyMatch(s -> AUTH_PATH_FRAGMENTS.stream()
+                                                .anyMatch(frag -> s.toLowerCase().contains(frag)))));
+            }
+        }
+        // AST fallback
+        return cls.getAnnotations().stream().anyMatch(this::isRequestMappingToAuth)
+                || cls.getMethods().stream()
+                   .anyMatch(m -> m.getAnnotations().stream()
+                                  .anyMatch(this::isMappingToAuthLogin));
+    }
+
+    private static boolean isHttpMappingAnnotation(String name) {
+        return Set.of("RequestMapping", "GetMapping", "PostMapping",
+                "PutMapping", "DeleteMapping", "PatchMapping").contains(name);
+    }
+
+    /** Checks for Spring Security parameter types (Authentication, Principal, @AuthenticationPrincipal). */
+    private boolean hasSecurityMethodParams(ClassOrInterfaceDeclaration cls, String fqcn) {
+        if (graph != null) {
+            var node = graph.node(fqcn);
+            if (node.isPresent()) {
+                return node.get().methods().stream().anyMatch(m ->
+                        m.parameterTypes().stream().anyMatch(pt ->
+                                pt.equals("Authentication") || pt.equals("Principal"))
+                        || m.annotations().contains("AuthenticationPrincipal"));
+            }
+        }
+        // AST fallback
+        return cls.getMethods().stream().anyMatch(m ->
+                m.getParameters().stream().anyMatch(p -> {
+                    String pType = p.getType().asString();
+                    return pType.equals("Authentication")
+                        || pType.equals("Principal")
+                        || p.getAnnotations().stream()
+                            .anyMatch(a -> a.getNameAsString().equals("AuthenticationPrincipal"));
+                }));
+    }
+
+    /** Checks for a method returning SecurityFilterChain — via graph or AST. */
+    private boolean hasMethodReturningFilterChain(ClassOrInterfaceDeclaration cls, String pkg) {
+        if (graph != null) {
+            String fqcn = pkg.isEmpty() ? cls.getNameAsString() : pkg + "." + cls.getNameAsString();
+            var node = graph.node(fqcn);
+            if (node.isPresent()) {
+                return node.get().methods().stream()
+                        .anyMatch(m -> "SecurityFilterChain".equals(m.returnType()));
+            }
+        }
+        // AST fallback
+        return cls.getMethods().stream()
+                .anyMatch(m -> m.getType().asString().equals("SecurityFilterChain"));
     }
 
     private static final Set<String> AUTH_PATH_FRAGMENTS = Set.of(
@@ -255,11 +341,10 @@ public class AuthPatternDetector {
     private String[] detectRegisterLinkedService(Path srcMain, String authPkg, String userPkg,
                                                   JavaParser parser) {
         if (authPkg == null) return null;
-        String authPkgPath = authPkg.replace('.', '/');
-        Path authDir = srcMain.resolve(authPkgPath);
-        if (!Files.isDirectory(authDir)) return null;
 
-        try (Stream<Path> files = Files.walk(authDir)) {
+        // Walk the entire source tree — the auth controller may live in a different
+        // package than the security configuration that triggered authPkg detection.
+        try (Stream<Path> files = Files.walk(srcMain)) {
             Optional<String[]> result = files
                     .filter(p -> p.toString().endsWith(".java"))
                     .flatMap(p -> {
@@ -273,63 +358,59 @@ public class AuthPatternDetector {
                             for (ClassOrInterfaceDeclaration cls : cu.findAll(ClassOrInterfaceDeclaration.class)) {
                                 if (!hasAnnotation(cls, "RestController")) continue;
 
-                                // Constructor parameters
+                                // Constructor parameters — identify service types structurally
                                 cls.getConstructors().forEach(ctor ->
                                         ctor.getParameters().forEach(param -> {
                                             String type = param.getTypeAsString();
-                                            if (type.endsWith("Service"))
+                                            if (isServiceType(type))
                                                 injectedServices.put(param.getNameAsString(), type);
                                         }));
-                                // Field injections
+                                // Field injections — identify service types structurally
                                 cls.getFields().forEach(field ->
                                         field.getVariables().forEach(v -> {
                                             String type = field.getElementType().asString();
-                                            if (type.endsWith("Service"))
+                                            if (isServiceType(type))
                                                 injectedServices.put(v.getNameAsString(), type);
                                         }));
 
-                                // Find the register method
+                                // Structural: find POST endpoint mapped to a registration path
                                 for (MethodDeclaration method : cls.getMethods()) {
-                                    if (!method.getNameAsString().toLowerCase().contains("register")) continue;
+                                    if (!hasRegistrationMapping(method)) continue;
 
-                                    // Look for: injectedService.createXxx(new EntityType(...)) calls
+                                    // Structural (data-flow): derive the id field from the user entity
+                                    // setter — e.g. user.setCustomerId(...) → idField = "customerId".
+                                    // This replaces the heuristic startsWith("create") on the service
+                                    // method name, because the *effect* (setting an id on the user) is
+                                    // the structural signal, not what the service method is called.
+                                    String idField = findIdSetterOnUser(method, injectedServices);
+                                    if (idField == null) continue;
+
+                                    // Find the cross-module service call in this registration endpoint
                                     for (MethodCallExpr call : method.findAll(MethodCallExpr.class)) {
                                         if (call.getScope().isEmpty()) continue;
                                         if (!(call.getScope().get() instanceof NameExpr scope)) continue;
 
-                                        String varName   = scope.getNameAsString();
+                                        String varName    = scope.getNameAsString();
                                         String serviceType = injectedServices.get(varName);
                                         if (serviceType == null) continue;
-
-                                        String methodName = call.getNameAsString();
-                                        if (!methodName.startsWith("create")) continue;
-
-                                        // Derive the entity type from the method name: createCustomer → Customer
-                                        String entityType = Character.toUpperCase(methodName.charAt(6))
-                                                + methodName.substring(7);
-                                        if (entityType.isBlank()) continue;
 
                                         // Check this service is from a different package (cross-module)
                                         String serviceTypePkg = resolveServicePackage(cu, serviceType);
                                         if (serviceTypePkg != null && serviceTypePkg.equals(authPkg)) continue;
                                         if (serviceTypePkg != null && serviceTypePkg.equals(userPkg)) continue;
 
-                                        // Derive service name: CustomerService → customer-service
+                                        // Derive service name from type: CustomerService → customer-service
                                         String baseTypeName = serviceType.replace("Service", "");
                                         String serviceName  = toKebabCase(baseTypeName) + "-service";
 
-                                        // Derive API path: Customer → /api/customers
-                                        String entityLower  = Character.toLowerCase(entityType.charAt(0))
-                                                + entityType.substring(1);
-                                        String apiPath      = "/api/" + entityLower + "s";
+                                        // Derive API path from idField: "customerId" → "customer" → pluralize
+                                        String entityLower = idField.endsWith("Id")
+                                                ? idField.substring(0, idField.length() - 2) : idField;
+                                        String apiPath = "/api/" + PLURALIZER.pluralize(entityLower);
 
-                                        // Derive the id field name: customerId
-                                        String idField = entityLower + "Id";
-
-                                        log.debug("Detected register cross-module call: {}.{}() → {} {}",
-                                                varName, methodName, serviceName, apiPath);
-                                        String[] found = {serviceName, apiPath, idField};
-                                        return Stream.<String[]>of(found);
+                                        log.debug("Detected register cross-module call: {}.{}() → {} {} idField={}",
+                                                varName, call.getNameAsString(), serviceName, apiPath, idField);
+                                        return Stream.<String[]>of(new String[]{serviceName, apiPath, idField});
                                     }
                                 }
                             }
@@ -346,6 +427,57 @@ public class AuthPatternDetector {
         }
     }
 
+    /**
+     * Determines if a type is a service class. Uses the graph to check for @Service/@Component
+     * annotations (structural) when available; falls back to name suffix matching.
+     */
+    private boolean isServiceType(String simpleTypeName) {
+        if (graph == null) return false;
+        // Structural: check if any node with this simple name has a @Service or @Component annotation
+        return graph.nodesMatching(n -> n.simpleName().equals(simpleTypeName)
+                && (n.annotations().contains("Service") || n.annotations().contains("Component")))
+                .stream().findAny().isPresent();
+    }
+
+    /**
+     * Returns true if {@code method} is a POST endpoint mapped to a registration path
+     * (structural check via {@code @PostMapping}/@{@code RequestMapping} annotation value).
+     */
+    private static boolean hasRegistrationMapping(MethodDeclaration method) {
+        for (AnnotationExpr ann : method.getAnnotations()) {
+            String name = ann.getNameAsString();
+            if (!name.equals("PostMapping") && !name.equals("RequestMapping")) continue;
+            String val = ann.toString().toLowerCase();
+            if (REGISTRATION_PATHS.stream().anyMatch(val::contains)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Scans {@code method} for a {@code setXxxId(...)} call whose receiver is NOT itself an
+     * injected service — meaning it's called on the user entity being constructed. Returns
+     * the id field name (e.g. {@code "customerId"}) or {@code null} if none found.
+     *
+     * <p>This is the structural replacement for the heuristic {@code startsWith("create")}:
+     * instead of guessing what service method creates the entity, we observe the *effect* —
+     * which id field is written back onto the user object.
+     */
+    private static String findIdSetterOnUser(MethodDeclaration method,
+                                              Map<String, String> injectedServices) {
+        for (MethodCallExpr call : method.findAll(MethodCallExpr.class)) {
+            if (call.getScope().isEmpty()) continue;
+            if (!(call.getScope().get() instanceof NameExpr scope)) continue;
+            String callName  = call.getNameAsString();
+            String scopeName = scope.getNameAsString();
+            // setXxxId on a variable that is NOT an injected service → it's on the user entity
+            if (callName.startsWith("set") && callName.endsWith("Id") && callName.length() > 5
+                    && !injectedServices.containsKey(scopeName)) {
+                return Character.toLowerCase(callName.charAt(3)) + callName.substring(4);
+            }
+        }
+        return null;
+    }
+
     /** Returns the package of the first import matching the given simple type name, or null. */
     private static String resolveServicePackage(CompilationUnit cu, String simpleType) {
         return cu.getImports().stream()
@@ -358,6 +490,60 @@ public class AuthPatternDetector {
                 })
                 .findFirst()
                 .orElse(null);
+    }
+
+    /**
+     * Extracts domain-specific fields from a UserDetails entity that should propagate as JWT claims.
+     *
+     * <p><b>Structural approach (graph available):</b> Queries the dependency graph for all
+     * {@code .claim("X", ...)} call-site arguments across classes that generate tokens. The
+     * returned fields are those entity fields whose names match actual claim names found in
+     * the monolith's token-generation code — no heuristic exclusion list needed.
+     *
+     * <p><b>Fallback (no graph):</b> Excludes {@link #STANDARD_USER_FIELDS} and JPA relationship
+     * fields, returning everything else as a domain field.
+     */
+    private Map<String, String> extractDomainFields(ClassOrInterfaceDeclaration cls) {
+        // Collect all declared fields on the entity (name → type)
+        Map<String, String> allFields = new LinkedHashMap<>();
+        for (FieldDeclaration f : cls.getFields()) {
+            if (f.getVariables().isEmpty()) continue;
+            String fieldName = f.getVariables().get(0).getNameAsString();
+            boolean hasRelationship = f.getAnnotations().stream()
+                    .anyMatch(a -> RELATIONSHIP_ANNOTATIONS.contains(a.getNameAsString()));
+            if (hasRelationship) continue;
+            allFields.put(fieldName, f.getElementType().asString());
+        }
+
+        if (graph != null) {
+            // Structural: find all .claim("X", ...) arguments from token-generation code
+            Set<String> claimNames = graph.callArgumentsFor(
+                    n -> n.methods().stream().anyMatch(m -> m.bodyMethodCalls().contains("claim")),
+                    "claim");
+
+            if (!claimNames.isEmpty()) {
+                // Return only fields whose names match actual claim names
+                Map<String, String> result = new LinkedHashMap<>();
+                for (Map.Entry<String, String> entry : allFields.entrySet()) {
+                    if (claimNames.contains(entry.getKey())) {
+                        result.put(entry.getKey(), entry.getValue());
+                    }
+                }
+                log.debug("Structural claim extraction: claimNames={}, matched fields={}", claimNames, result.keySet());
+                return result;
+            }
+            // If no .claim() calls found in the graph, fall through to heuristic fallback
+            log.debug("No .claim() call sites found in graph — falling back to field exclusion");
+        }
+
+        // Fallback: exclude standard UserDetails fields
+        Map<String, String> result = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : allFields.entrySet()) {
+            if (!STANDARD_USER_FIELDS.contains(entry.getKey())) {
+                result.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return result;
     }
 
     /** Converts CamelCase to kebab-case: {@code CustomerAddress} → {@code customer-address}. */
