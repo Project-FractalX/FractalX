@@ -68,11 +68,13 @@ public class DecompositionValidator {
     public ValidationReport validate(List<FractalModule> modules, Path sourceRoot)
             throws IOException {
         // sourceRoot is src/main/java; resources are at ../resources; project root is ../../..
-        Path resourcesDir  = sourceRoot.resolveSibling("resources");
-        Path projectRoot   = sourceRoot.getParent().getParent().getParent(); // src/main/java → project root
+        Path resourcesDir = sourceRoot.resolveSibling("resources");
+        Path p1 = sourceRoot.getParent();
+        Path p2 = p1 != null ? p1.getParent() : null;
+        Path projectRoot  = p2 != null ? p2.getParent() : null;
         FractalxConfig config = new FractalxConfigReader().read(
                 java.nio.file.Files.isDirectory(resourcesDir) ? resourcesDir : sourceRoot,
-                java.nio.file.Files.isDirectory(projectRoot)  ? projectRoot  : sourceRoot);
+                projectRoot != null && java.nio.file.Files.isDirectory(projectRoot) ? projectRoot : sourceRoot);
         ValidationContext ctx = new ValidationContext(modules, sourceRoot, config);
 
         List<ValidationIssue> all = new ArrayList<>();
