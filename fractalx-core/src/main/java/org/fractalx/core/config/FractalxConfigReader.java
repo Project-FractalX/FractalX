@@ -234,15 +234,17 @@ public class FractalxConfigReader {
         // ── Feature flags ─────────────────────────────────────────────────────
 
         Map<String, Object> featMap = nestedMap(fx, "features");
+        // admin/saga/observability/resilience are reserved for a future release — the generators
+        // were withdrawn from the stable core, so these flags default to false and are inert.
         FractalxConfig.FeatureFlags features = new FractalxConfig.FeatureFlags(
                 readBool(featMap, "gateway",          true),
-                readBool(featMap, "admin",            true),
+                readBool(featMap, "admin",            false),
                 readBool(featMap, "registry",         true),
                 readBool(featMap, "logger",           true),
-                readBool(featMap, "saga",             true),
+                readBool(featMap, "saga",             false),
                 readBool(featMap, "docker",           true),
-                readBool(featMap, "observability",    true),
-                readBool(featMap, "resilience",       true),
+                readBool(featMap, "observability",    false),
+                readBool(featMap, "resilience",       false),
                 readBool(featMap, "distributed-data", true)
         );
         if (!features.gateway())         log.info("[FractalxConfig] Feature DISABLED: gateway");

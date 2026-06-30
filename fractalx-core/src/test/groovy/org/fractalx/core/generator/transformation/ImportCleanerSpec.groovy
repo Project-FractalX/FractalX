@@ -29,7 +29,7 @@ class ImportCleanerSpec extends Specification {
             .build()
 
     private GenerationContext ctx() {
-        new GenerationContext(module, serviceRoot, serviceRoot, [module], FractalxConfig.defaults(), [])
+        new GenerationContext(module, serviceRoot, serviceRoot, [module], FractalxConfig.defaults())
     }
 
     private Path write(String name, String content) {

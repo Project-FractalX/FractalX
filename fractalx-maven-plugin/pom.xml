@@ -25,12 +25,6 @@
         </dependency>
 
         <dependency>
-            <groupId>org.fractalx</groupId>
-            <artifactId>fractalx-initializr-core</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-
-        <dependency>
             <groupId>org.apache.maven</groupId>
             <artifactId>maven-plugin-api</artifactId>
             <version>3.9.5</version>

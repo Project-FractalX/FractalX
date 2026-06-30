@@ -158,7 +158,10 @@ public record FractalxConfig(
             boolean distributedData
     ) {
         public static FeatureFlags defaults() {
-            return new FeatureFlags(true, true, true, true, true, true, true, true, true);
+            // gateway, registry, logger, docker, distributedData → on (stable core).
+            // admin, saga, observability, resilience → off (withdrawn from the stable
+            // core; reserved for a future release).
+            return new FeatureFlags(true, false, true, true, false, true, false, false, true);
         }
     }
 

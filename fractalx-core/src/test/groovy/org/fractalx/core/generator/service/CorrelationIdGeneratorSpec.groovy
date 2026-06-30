@@ -30,7 +30,7 @@ class CorrelationIdGeneratorSpec extends Specification {
     private GenerationContext ctx() {
         def resourcesDir = serviceRoot.resolve("src/main/resources")
         Files.createDirectories(resourcesDir)
-        new GenerationContext(module, serviceRoot, serviceRoot, [], FractalxConfig.defaults(), [])
+        new GenerationContext(module, serviceRoot, serviceRoot, [], FractalxConfig.defaults())
     }
 
     private String logback() {

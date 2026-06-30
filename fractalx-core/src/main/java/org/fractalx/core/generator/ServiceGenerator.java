@@ -7,21 +7,14 @@ import org.fractalx.core.config.FractalxConfig;
 import org.fractalx.core.config.FractalxConfigReader;
 import org.fractalx.core.datamanagement.DistributedServiceHelper;
 import org.fractalx.core.datamanagement.RepositoryAnalyzer;
-import org.fractalx.core.datamanagement.SagaAnalyzer;
 import org.fractalx.core.gateway.GatewayGenerator;
-import org.fractalx.core.generator.admin.AdminServiceGenerator;
 import org.fractalx.core.generator.registry.RegistryServiceGenerator;
-import org.fractalx.core.generator.observability.OtelConfigStep;
-import org.fractalx.core.generator.observability.HealthMetricsStep;
-import org.fractalx.core.generator.resilience.ResilienceConfigStep;
-import org.fractalx.core.generator.saga.SagaOrchestratorGenerator;
 import org.fractalx.core.generator.service.ApplicationGenerator;
 import org.fractalx.core.generator.service.ConfigurationGenerator;
 import org.fractalx.core.generator.service.CorrelationIdGenerator;
 import org.fractalx.core.generator.service.NetScopeClientGenerator;
 import org.fractalx.core.generator.service.NetScopeRegistryBridgeStep;
 import org.fractalx.core.generator.service.PomGenerator;
-import org.fractalx.core.generator.service.DbSummaryStep;
 import org.fractalx.core.generator.service.ServiceRegistrationStep;
 import org.fractalx.core.generator.transformation.AnnotationRemover;
 import org.fractalx.core.generator.transformation.AuthenticationPrincipalRewriterStep;
@@ -38,15 +31,12 @@ import org.fractalx.core.generator.transformation.ImportCleaner;
 import org.fractalx.core.generator.transformation.ImportPreserver;
 import org.fractalx.core.generator.transformation.NetScopeClientWiringStep;
 import org.fractalx.core.generator.transformation.NetScopeServerAnnotationStep;
-import org.fractalx.core.generator.transformation.SagaMethodTransformer;
 import org.fractalx.core.graph.DependencyGraph;
 import org.fractalx.core.graph.GraphBuilder;
 import org.fractalx.core.model.FractalModule;
-import org.fractalx.core.model.SagaDefinition;
 import org.fractalx.core.naming.NameResolver;
 import org.fractalx.core.naming.NamingValidator;
 import org.fractalx.core.observability.LoggerServiceGenerator;
-import org.fractalx.core.observability.ObservabilityInjector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -92,24 +82,18 @@ public class ServiceGenerator {
     // Ordered list of generation steps — open for extension, closed for modification
     private final List<ServiceFileGenerator> pipeline;
 
-    private final ObservabilityInjector     observabilityInjector;
     private final DistributedServiceHelper  distributedServiceHelper;
-    private final AdminServiceGenerator     adminServiceGenerator;
-    private final SagaOrchestratorGenerator sagaOrchestratorGenerator;
-    private final SagaAnalyzer              sagaAnalyzer;
     private final RepositoryAnalyzer        repositoryAnalyzer;
     private final RegistryServiceGenerator  registryServiceGenerator;
     private final DockerComposeGenerator    dockerComposeGenerator;
 
     private boolean generateGateway = true;
-    private boolean generateAdmin   = true;
     private boolean generateDocker  = true;
 
     private java.util.function.Consumer<String> onStepStart    = lbl -> {};
     private java.util.function.Consumer<String> onStepComplete = lbl -> {};
 
     public ServiceGenerator withGateway(boolean v) { this.generateGateway = v; return this; }
-    public ServiceGenerator withAdmin(boolean v)   { this.generateAdmin   = v; return this; }
     public ServiceGenerator withDocker(boolean v)  { this.generateDocker  = v; return this; }
 
     public void setProgressCallbacks(java.util.function.Consumer<String> onStart,
@@ -122,11 +106,7 @@ public class ServiceGenerator {
         this.sourceRoot = sourceRoot;
         this.outputRoot = outputRoot;
 
-        this.observabilityInjector     = new ObservabilityInjector();
         this.distributedServiceHelper  = new DistributedServiceHelper();
-        this.adminServiceGenerator     = new AdminServiceGenerator();
-        this.sagaOrchestratorGenerator = new SagaOrchestratorGenerator();
-        this.sagaAnalyzer              = new SagaAnalyzer();
         this.repositoryAnalyzer        = new RepositoryAnalyzer();
         this.registryServiceGenerator  = new RegistryServiceGenerator();
         this.dockerComposeGenerator    = new DockerComposeGenerator();
@@ -187,17 +167,10 @@ public class ServiceGenerator {
      * @return an immutable, ordered list of generation steps
      */
     private List<ServiceFileGenerator> buildPipeline() {
-        ObservabilityInjector injector = this.observabilityInjector;
-
         return List.of(
-                new PomGenerator(injector),
+                new PomGenerator(),
                 new ApplicationGenerator(),
                 new ConfigurationGenerator(),
-                context -> {
-                    if (context.getFractalxConfig().features().observability()) {
-                        injector.patchConfigurationFile(context.getSrcMainResources());
-                    }
-                },
                 new CodeCopier(),
                 new SharedCodeCopier(),
                 new ServiceSecurityStep(),           // Phase 2.5: generate per-service security config
@@ -214,22 +187,17 @@ public class ServiceGenerator {
                 new NetScopeClientGenerator(),
                 new NetScopeClientWiringStep(),
                 new DecompositionHintsStep(),        // detect @Transactional/cache/event/aspect/scheduler patterns
-                new SagaMethodTransformer(),    // replaces cross-service calls with outboxPublisher.publish()
                 context -> {
                     if (context.getFractalxConfig().features().distributedData()) {
                         distributedServiceHelper.upgradeService(
                                 context.getModule(), context.getSourceRoot(), context.getServiceRoot(),
-                                context.getSagaDefinitions(), context.servicePackage(),
+                                context.servicePackage(),
                                 context.getFractalxConfig().springBootVersion());
                     }
                 },
                 new CorrelationIdGenerator(),    // generates logback-spring.xml with %X{correlationId}
-                new OtelConfigStep(),
-                new HealthMetricsStep(),
-                new DbSummaryStep(),
                 new ServiceRegistrationStep(),
-                new NetScopeRegistryBridgeStep(),
-                new ResilienceConfigStep()
+                new NetScopeRegistryBridgeStep()
         );
     }
 
@@ -261,9 +229,6 @@ public class ServiceGenerator {
         log.info("DependencyGraph built: {} nodes, {} edges",
                 dependencyGraph.allNodes().size(), dependencyGraph.allEdges().size());
 
-        // Detect @DistributedSaga definitions across all modules
-        List<SagaDefinition> sagaDefinitions = sagaAnalyzer.analyzeSagas(sourceRoot, modules);
-
         // Detect monolith Spring Security configuration (used by ServiceSecurityStep + DecompositionHintsStep)
         SecurityProfile securityProfile = SecurityProfile.none();
         try {
@@ -285,7 +250,7 @@ public class ServiceGenerator {
 
         for (FractalModule module : modules) {
             onStepStart.accept(module.getServiceName());
-            generateService(module, modules, fractalxConfig, sagaDefinitions, securityProfile, nameResolver, dependencyGraph);
+            generateService(module, modules, fractalxConfig, securityProfile, nameResolver, dependencyGraph);
             onStepComplete.accept(module.getServiceName());
         }
 
@@ -317,34 +282,17 @@ public class ServiceGenerator {
             log.info("Feature 'gateway' disabled — skipping fractalx-gateway generation");
         }
 
-        if (generateAdmin && fractalxConfig.features().admin()) {
-            onStepStart.accept("fractalx-admin");
-            adminServiceGenerator.generateAdminService(modules, outputRoot, sourceRoot, fractalxConfig, sagaDefinitions, authPattern);
-            onStepComplete.accept("fractalx-admin");
-        } else if (!fractalxConfig.features().admin()) {
-            log.info("Feature 'admin' disabled — skipping admin-service generation");
-        }
-
-        boolean hasSagas = !sagaDefinitions.isEmpty();
-        if (hasSagas && fractalxConfig.features().saga()) {
-            onStepStart.accept("fractalx-saga-orchestrator");
-            sagaOrchestratorGenerator.generateOrchestratorService(modules, sagaDefinitions, outputRoot, fractalxConfig);
-            onStepComplete.accept("fractalx-saga-orchestrator");
-        } else if (!fractalxConfig.features().saga()) {
-            log.info("Feature 'saga' disabled — skipping fractalx-saga-orchestrator generation");
-        }
-
         if (generateDocker && fractalxConfig.features().docker()) {
             onStepStart.accept("docker-compose + scripts");
-            dockerComposeGenerator.generate(modules, outputRoot, hasSagas, sagaDefinitions, fractalxConfig);
-            generateStartScripts(modules, sagaDefinitions, authPattern);
+            dockerComposeGenerator.generate(modules, outputRoot, fractalxConfig);
+            generateStartScripts(modules, authPattern);
             onStepComplete.accept("docker-compose + scripts");
         } else {
             if (!fractalxConfig.features().docker()) {
                 log.info("Feature 'docker' disabled — skipping docker-compose generation");
             }
             onStepStart.accept("start scripts");
-            generateStartScripts(modules, sagaDefinitions, authPattern);
+            generateStartScripts(modules, authPattern);
             onStepComplete.accept("start scripts");
         }
 
@@ -357,7 +305,6 @@ public class ServiceGenerator {
 
     private void generateService(FractalModule module, List<FractalModule> allModules,
                                   FractalxConfig fractalxConfig,
-                                  List<SagaDefinition> sagaDefinitions,
                                   SecurityProfile securityProfile,
                                   NameResolver nameResolver,
                                   DependencyGraph dependencyGraph) throws IOException {
@@ -369,7 +316,7 @@ public class ServiceGenerator {
         Files.createDirectories(serviceRoot.resolve("src/test/java"));
 
         GenerationContext context = new GenerationContext(
-                module, sourceRoot, serviceRoot, allModules, fractalxConfig, sagaDefinitions,
+                module, sourceRoot, serviceRoot, allModules, fractalxConfig,
                 securityProfile, nameResolver, dependencyGraph);
 
         for (ServiceFileGenerator step : pipeline) {
@@ -398,16 +345,14 @@ public class ServiceGenerator {
         }
     }
 
-    private void generateStartScripts(List<FractalModule> modules,
-                                       List<SagaDefinition> sagaDefinitions) throws IOException {
-        generateStartScripts(modules, sagaDefinitions, AuthPattern.none());
+    private void generateStartScripts(List<FractalModule> modules) throws IOException {
+        generateStartScripts(modules, AuthPattern.none());
     }
 
     private void generateStartScripts(List<FractalModule> modules,
-                                       List<SagaDefinition> sagaDefinitions,
                                        AuthPattern authPattern) throws IOException {
         Path gatewayPath = outputRoot.resolve(GATEWAY_DIR);
-        boolean hasSaga  = !sagaDefinitions.isEmpty();
+        boolean hasSaga  = false;
         boolean hasAuth  = authPattern != null && authPattern.detected();
 
         generateStartScript(modules, gatewayPath, hasSaga, hasAuth);

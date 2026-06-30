@@ -35,7 +35,7 @@ class FileCleanupStepSpec extends Specification {
     FileCleanupStep step = new FileCleanupStep()
 
     private GenerationContext ctx(FractalModule m) {
-        new GenerationContext(m, serviceRoot, serviceRoot, [m], FractalxConfig.defaults(), [])
+        new GenerationContext(m, serviceRoot, serviceRoot, [m], FractalxConfig.defaults())
     }
 
     private Path write(String name, String content) {

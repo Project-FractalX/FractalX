@@ -46,7 +46,6 @@
     <modules>
         <module>../fractalx-annotations</module>
         <module>../fractalx-core</module>
-        <module>../fractalx-initializr-core</module>
         <module>../fractalx-maven-plugin</module>
         <module>../fractalx-runtime</module>
     </modules>
@@ -54,7 +53,7 @@
     <properties>
         <!-- ── Single source of truth for all module versions ─────────────── -->
         <!-- To bump: change only this property. All child modules inherit it. -->
-        <revision>0.5.1</revision>
+        <revision>0.6.0</revision>
 
         <java.version>17</java.version>
         <maven.compiler.source>17</maven.compiler.source>

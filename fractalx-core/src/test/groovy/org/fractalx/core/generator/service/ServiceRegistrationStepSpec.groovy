@@ -28,7 +28,7 @@ class ServiceRegistrationStepSpec extends Specification {
         .build()
 
     private GenerationContext ctx(FractalModule m, List<FractalModule> all = [m]) {
-        new GenerationContext(m, serviceRoot, serviceRoot, all, FractalxConfig.defaults().withBasePackage("org.fractalx.generated"), [])
+        new GenerationContext(m, serviceRoot, serviceRoot, all, FractalxConfig.defaults().withBasePackage("org.fractalx.generated"))
     }
 
     private Path generatedPkg() {

@@ -5,7 +5,6 @@ import org.fractalx.core.config.FractalxConfig;
 import org.fractalx.core.generator.GenerationContext;
 import org.fractalx.core.generator.ServiceFileGenerator;
 import org.fractalx.core.model.FractalModule;
-import org.fractalx.core.observability.ObservabilityInjector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.w3c.dom.Document;
@@ -92,10 +91,7 @@ public class PomGenerator implements ServiceFileGenerator {
             "fractalx-core"
     );
 
-    private final ObservabilityInjector observabilityInjector;
-
-    public PomGenerator(ObservabilityInjector observabilityInjector) {
-        this.observabilityInjector = observabilityInjector;
+    public PomGenerator() {
     }
 
     @Override
@@ -136,9 +132,6 @@ public class PomGenerator implements ServiceFileGenerator {
                     module.getServiceName());
             addFractalxDeps(doc, cfg, module.getServiceName());
             addTransactionSupportIfNeeded(doc, module.getDetectedImports());
-            if (cfg.features().observability()) {
-                appendObservabilityDeps(doc);
-            }
             if (isBoot4Plus) {
                 // Spring Boot 4.x manages OTel via micrometer-tracing BOM. ObservabilityInjector
                 // adds pinned OTel SDK versions (1.32.0) that are binary-incompatible with Boot 4.x's
@@ -233,7 +226,7 @@ public class PomGenerator implements ServiceFileGenerator {
                             <groupId>io.micrometer</groupId>
                             <artifactId>micrometer-registry-prometheus</artifactId>
                         </dependency>
-                """ : observabilityInjector.getDependencies();
+                """ : "";
 
         return """
                 <?xml version="1.0" encoding="UTF-8"?>
@@ -550,29 +543,6 @@ public class PomGenerator implements ServiceFileGenerator {
         if (hasDependency(doc, "spring-boot-starter-data-jpa")) return;
         addDepIfAbsent(doc, ensureDependenciesElement(doc),
                 "org.springframework", "spring-tx", null, null);
-    }
-
-    /**
-     * Parses the observability dep XML fragment and appends any dep not already present.
-     */
-    private void appendObservabilityDeps(Document doc) {
-        String depsXml = observabilityInjector.getDependencies();
-        if (depsXml == null || depsXml.isBlank()) return;
-        try {
-            Document fragDoc = DocumentBuilderFactory.newInstance().newDocumentBuilder()
-                    .parse(new InputSource(new StringReader("<dependencies>" + depsXml + "</dependencies>")));
-            Element depsEl = ensureDependenciesElement(doc);
-            NodeList depNodes = fragDoc.getDocumentElement().getElementsByTagName("dependency");
-            for (int i = 0; i < depNodes.getLength(); i++) {
-                Element dep = (Element) depNodes.item(i);
-                String artifactId = text(dep, "artifactId");
-                if (!hasDependency(doc, artifactId)) {
-                    depsEl.appendChild(doc.importNode(dep, true));
-                }
-            }
-        } catch (Exception e) {
-            log.warn("Could not parse observability deps fragment: {}", e.getMessage());
-        }
     }
 
     /**

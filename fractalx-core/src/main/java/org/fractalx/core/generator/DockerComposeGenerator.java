@@ -4,7 +4,6 @@ import org.fractalx.core.FractalxVersion;
 import org.fractalx.core.config.FractalxConfig;
 import org.fractalx.core.generator.registry.RegistryServiceGenerator;
 import org.fractalx.core.model.FractalModule;
-import org.fractalx.core.model.SagaDefinition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -12,7 +11,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -24,30 +22,16 @@ public class DockerComposeGenerator {
 
     private static final Logger log = LoggerFactory.getLogger(DockerComposeGenerator.class);
 
-    /**
-     * @deprecated kept for backward-compatibility; prefer the overload that accepts
-     *             the saga list so the generated compose can wire {@code <SAGA_ID>_OWNER_URL}
-     *             env vars on the orchestrator.
-     */
-    @Deprecated
     public void generate(List<FractalModule> modules, Path outputRoot,
-                         boolean hasSagaOrchestrator, FractalxConfig config) throws IOException {
-        generate(modules, outputRoot, hasSagaOrchestrator, Collections.emptyList(), config);
-    }
-
-    public void generate(List<FractalModule> modules, Path outputRoot,
-                         boolean hasSagaOrchestrator, List<SagaDefinition> sagas,
                          FractalxConfig config) throws IOException {
-        generateDockerCompose(modules, outputRoot, hasSagaOrchestrator, sagas, config);
-        generateDockerfiles(modules, outputRoot, hasSagaOrchestrator, config);
+        generateDockerCompose(modules, outputRoot, config);
+        generateDockerfiles(modules, outputRoot, config);
         log.info("Generated docker-compose.yml and Dockerfiles");
     }
 
     // -------------------------------------------------------------------------
 
     private void generateDockerCompose(List<FractalModule> modules, Path outputRoot,
-                                        boolean hasSagaOrchestrator,
-                                        List<SagaDefinition> sagas,
                                         FractalxConfig config) throws IOException {
         StringBuilder services = new StringBuilder();
 
@@ -108,14 +92,6 @@ public class DockerComposeGenerator {
             services.append("      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:").append(config.jaegerOtlpPort()).append("\n");
             services.append("      - OTEL_SERVICE_NAME=").append(m.getServiceName()).append("\n");
             services.append("      - FRACTALX_LOGGER_URL=http://logger-service:").append(config.loggerPort()).append("/api/logs\n");
-            // Saga orchestrator URL — used by OutboxPoller to forward saga-trigger events.
-            // Only emitted when a saga orchestrator is generated; locally the env var is
-            // unset and application.yml's ${FRACTALX_SAGA_ORCHESTRATOR_URL:http://localhost:<port>}
-            // default keeps the previous behavior unchanged.
-            if (hasSagaOrchestrator) {
-                services.append("      - FRACTALX_SAGA_ORCHESTRATOR_URL=http://fractalx-saga-orchestrator:")
-                        .append(config.sagaPort()).append("\n");
-            }
             for (String dep : m.getDependencies()) {
                 String peer   = beanTypeToServiceName(dep);
                 String envPfx = peer.toUpperCase().replace("-", "_");
@@ -125,54 +101,6 @@ public class DockerComposeGenerator {
             }
             services.append("    depends_on:\n      fractalx-registry:\n        condition: service_healthy\n\n");
         }
-
-        // Saga orchestrator (optional)
-        if (hasSagaOrchestrator) {
-            services.append("  fractalx-saga-orchestrator:\n");
-            services.append("    build:\n      context: ./fractalx-saga-orchestrator\n      dockerfile: Dockerfile\n");
-            services.append("    ports:\n      - \"").append(config.sagaPort()).append(":").append(config.sagaPort()).append("\"\n");
-            services.append("    environment:\n");
-            services.append("      - SPRING_PROFILES_ACTIVE=docker\n");
-            services.append("      - FRACTALX_REGISTRY_URL=http://fractalx-registry:").append(regPort).append("\n");
-            services.append("      - FRACTALX_REGISTRY_HOST=fractalx-saga-orchestrator\n");
-            services.append("      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:").append(config.jaegerOtlpPort()).append("\n");
-            services.append("      - OTEL_SERVICE_NAME=fractalx-saga-orchestrator\n");
-            services.append("      - FRACTALX_LOGGER_URL=http://logger-service:").append(config.loggerPort()).append("/api/logs\n");
-            // Per-saga owner URLs — used by the orchestrator's notification poller to call back
-            // into each saga's owner service on completion. Without these, application.yml's
-            // ${<SAGAID>_OWNER_URL:http://localhost:<port>} default fires inside the saga
-            // container, where localhost resolves to the saga itself → notifications fail
-            // forever and rows go to dead-letter. Local mode leaves these unset so the
-            // localhost default still works.
-            for (SagaDefinition saga : sagas) {
-                int ownerPort = modules.stream()
-                        .filter(m -> m.getServiceName().equals(saga.getOwnerServiceName()))
-                        .map(FractalModule::getPort)
-                        .findFirst()
-                        .orElse(0);
-                if (ownerPort <= 0) continue; // owner not in module list — nothing safe to wire
-                String envVar = saga.getSagaId().toUpperCase().replace("-", "_") + "_OWNER_URL";
-                services.append("      - ").append(envVar).append("=http://")
-                        .append(saga.getOwnerServiceName()).append(":").append(ownerPort).append("\n");
-            }
-            services.append("    depends_on:\n      fractalx-registry:\n        condition: service_healthy\n\n");
-        }
-
-        // Admin service
-        services.append("  admin-service:\n");
-        services.append("    build:\n      context: ./admin-service\n      dockerfile: Dockerfile\n");
-        services.append("    ports:\n      - \"").append(config.adminPort()).append(":").append(config.adminPort()).append("\"\n");
-        services.append("    environment:\n");
-        services.append("      - SPRING_PROFILES_ACTIVE=docker\n");
-        services.append("      - FRACTALX_REGISTRY_URL=http://fractalx-registry:").append(regPort).append("\n");
-        services.append("      - JAEGER_QUERY_URL=http://jaeger:").append(config.jaegerUiPort()).append("\n");
-        // Admin's ObservabilityController binds this to fractalx.observability.logger-url and
-        // appends paths itself ("/api/logs", "/api/logs/services", "/api/logs/stats"). So this
-        // must be the BASE URL only — no /api/logs suffix — otherwise admin double-suffixes
-        // and every log query 404s. Microservices/saga/gateway use the WITH-suffix form below
-        // because their log appenders POST directly to that URL without further appending.
-        services.append("      - FRACTALX_LOGGER_URL=http://logger-service:").append(config.loggerPort()).append("\n");
-        services.append("    depends_on:\n      fractalx-registry:\n        condition: service_healthy\n\n");
 
         // API Gateway
         services.append("  fractalx-gateway:\n");
@@ -197,7 +125,7 @@ public class DockerComposeGenerator {
     }
 
     private void generateDockerfiles(List<FractalModule> modules, Path outputRoot,
-                                      boolean hasSagaOrchestrator, FractalxConfig config) throws IOException {
+                                      FractalxConfig config) throws IOException {
         String version = FractalxVersion.get();
 
         String dockerfile = """
@@ -249,9 +177,7 @@ public class DockerComposeGenerator {
         modules.forEach(m -> serviceDirs.add(m.getServiceName()));
         serviceDirs.add("fractalx-registry");
         serviceDirs.add("fractalx-gateway");
-        serviceDirs.add("admin-service");
         serviceDirs.add("logger-service");
-        if (hasSagaOrchestrator) serviceDirs.add("fractalx-saga-orchestrator");
 
         for (String dir : serviceDirs) {
             Path serviceDir = outputRoot.resolve(dir);

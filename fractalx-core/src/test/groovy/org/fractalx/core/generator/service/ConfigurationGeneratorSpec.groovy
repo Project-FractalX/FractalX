@@ -42,7 +42,7 @@ class ConfigurationGeneratorSpec extends Specification {
     private GenerationContext ctx(FractalModule m, List<FractalModule> all = [m]) {
         def resourcesDir = serviceRoot.resolve("src/main/resources")
         Files.createDirectories(resourcesDir)
-        new GenerationContext(m, serviceRoot, serviceRoot, all, FractalxConfig.defaults(), [])
+        new GenerationContext(m, serviceRoot, serviceRoot, all, FractalxConfig.defaults())
     }
 
     /** Builds a context with a custom flyway setup: project-level flag + optional per-service override. */
@@ -65,7 +65,7 @@ class ConfigurationGeneratorSpec extends Specification {
                 d.jaegerUiPort(), d.jaegerOtlpPort(),
                 d.resilience(), d.dockerImages(), features, d.naming()
         )
-        new GenerationContext(m, serviceRoot, serviceRoot, [m], cfg, [])
+        new GenerationContext(m, serviceRoot, serviceRoot, [m], cfg)
     }
 
     private String base()   { Files.readString(serviceRoot.resolve("src/main/resources/application.yml")) }

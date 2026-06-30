@@ -1,7 +1,6 @@
 package org.fractalx.core.datamanagement;
 
 import org.fractalx.core.model.FractalModule;
-import org.fractalx.core.model.SagaDefinition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -53,11 +52,10 @@ public class DistributedServiceHelper {
      * @param module          the module being upgraded
      * @param sourceRoot      the monolith source root (for reading original DB config)
      * @param serviceRoot     the generated service root directory
-     * @param sagaDefinitions all sagas detected in the monolith (may be empty)
      * @param basePackage     the generated base package (e.g. "com.acme.generated.orderservice")
      */
     public void upgradeService(FractalModule module, Path sourceRoot, Path serviceRoot,
-                               List<SagaDefinition> sagaDefinitions, String basePackage,
+                               String basePackage,
                                String springBootVersion) throws IOException {
         Path srcMainJava      = serviceRoot.resolve("src/main/java");
         Path srcMainResources = serviceRoot.resolve("src/main/resources");
@@ -92,28 +90,20 @@ public class DistributedServiceHelper {
 
         // 5. Generate transactional outbox.
         //
-        // Two independent reasons to generate the outbox:
-        //   a) Saga owner — SagaMethodTransformer unconditionally injects OutboxPublisher
-        //      into any class annotated with @DistributedSaga, regardless of whether
-        //      the module has cross-module dependencies or JPA entities. If we skip
-        //      generation here the import reference compiles to a missing class.
-        //   b) Cross-module JPA service — has explicit dependencies and persistent state
-        //      that needs the dual-write guarantee.
-        boolean isSagaOwner = sagaDefinitions.stream()
-                .anyMatch(s -> module.getServiceName().equals(s.getOwnerServiceName()));
-        boolean needsOutbox = isSagaOwner
-                || (hasJpaContent(module) && !module.getDependencies().isEmpty());
+        // Cross-module JPA service — has explicit dependencies and persistent state
+        // that needs the dual-write guarantee.
+        boolean needsOutbox = hasJpaContent(module) && !module.getDependencies().isEmpty();
         if (needsOutbox) {
-            outboxGen.generateOutbox(module, serviceRoot, sagaDefinitions, basePackage);
+            outboxGen.generateOutbox(module, serviceRoot, basePackage);
         } else if (!module.getDependencies().isEmpty()) {
-            log.info("   ⏭ No JPA entities in {} and not a saga owner — skipping Outbox", module.getServiceName());
+            log.info("   ⏭ No JPA entities in {} — skipping Outbox", module.getServiceName());
         }
 
         // 6. Generate reference validators for decoupled foreign keys
         referenceValidatorGen.generateReferenceValidator(module, serviceRoot, basePackage);
 
         // 7. Generate DATA_README.md
-        dataReadmeGen.generateServiceDataReadme(module, serviceRoot, driverClass, sagaDefinitions);
+        dataReadmeGen.generateServiceDataReadme(module, serviceRoot, driverClass);
 
         // 8. Provision any implied dependencies detected in the fully-generated source
         //    (e.g. Lombok, jakarta.validation copied with model classes from other modules)

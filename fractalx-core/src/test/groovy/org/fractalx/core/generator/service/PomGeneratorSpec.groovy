@@ -4,7 +4,6 @@ import org.fractalx.core.FractalxVersion
 import org.fractalx.core.config.FractalxConfig
 import org.fractalx.core.generator.GenerationContext
 import org.fractalx.core.model.FractalModule
-import org.fractalx.core.observability.ObservabilityInjector
 import spock.lang.Specification
 import spock.lang.TempDir
 
@@ -16,8 +15,7 @@ class PomGeneratorSpec extends Specification {
     @TempDir
     Path tempDir
 
-    ObservabilityInjector observabilityInjector = new ObservabilityInjector()
-    PomGenerator generator = new PomGenerator(observabilityInjector)
+    PomGenerator generator = new PomGenerator()
 
     /**
      * Directory layout that mirrors real decompose output:
@@ -54,7 +52,7 @@ class PomGeneratorSpec extends Specification {
         def svcRoot = serviceRoot()
         Files.createDirectories(svcRoot)
         def ctx = new GenerationContext(module, outputRoot(), svcRoot,
-                [module], FractalxConfig.defaults(), [])
+                [module], FractalxConfig.defaults())
         generator.generate(ctx)
         Files.readString(svcRoot.resolve("pom.xml"))
     }

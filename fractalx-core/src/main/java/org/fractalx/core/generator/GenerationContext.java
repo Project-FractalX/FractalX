@@ -4,7 +4,6 @@ import org.fractalx.core.config.FractalxConfig;
 import org.fractalx.core.gateway.SecurityProfile;
 import org.fractalx.core.graph.DependencyGraph;
 import org.fractalx.core.model.FractalModule;
-import org.fractalx.core.model.SagaDefinition;
 import org.fractalx.core.naming.NameResolver;
 
 import java.nio.file.Path;
@@ -21,7 +20,6 @@ public final class GenerationContext {
     private final Path serviceRoot;
     private final List<FractalModule> allModules;
     private final FractalxConfig fractalxConfig;
-    private final List<SagaDefinition> sagaDefinitions;
     private final SecurityProfile securityProfile;  // nullable — null means no security detected
     private final NameResolver nameResolver;
     private final DependencyGraph dependencyGraph;  // nullable — null when graph is not yet built
@@ -32,7 +30,6 @@ public final class GenerationContext {
                              Path serviceRoot,
                              List<FractalModule> allModules,
                              FractalxConfig fractalxConfig,
-                             List<SagaDefinition> sagaDefinitions,
                              SecurityProfile securityProfile,
                              NameResolver nameResolver,
                              DependencyGraph dependencyGraph) {
@@ -41,7 +38,6 @@ public final class GenerationContext {
         this.serviceRoot = serviceRoot;
         this.allModules = List.copyOf(allModules);
         this.fractalxConfig = fractalxConfig;
-        this.sagaDefinitions = List.copyOf(sagaDefinitions);
         this.securityProfile = securityProfile;
         this.nameResolver = nameResolver != null ? nameResolver
                 : new NameResolver(fractalxConfig.naming());
@@ -54,33 +50,30 @@ public final class GenerationContext {
                              Path serviceRoot,
                              List<FractalModule> allModules,
                              FractalxConfig fractalxConfig,
-                             List<SagaDefinition> sagaDefinitions,
                              SecurityProfile securityProfile,
                              NameResolver nameResolver) {
-        this(module, sourceRoot, serviceRoot, allModules, fractalxConfig, sagaDefinitions,
+        this(module, sourceRoot, serviceRoot, allModules, fractalxConfig,
                 securityProfile, nameResolver, null);
     }
 
-    /** Backward-compatible 7-arg constructor (securityProfile supplied, nameResolver derived from config). */
+    /** Backward-compatible constructor (securityProfile supplied, nameResolver derived from config). */
     public GenerationContext(FractalModule module,
                              Path sourceRoot,
                              Path serviceRoot,
                              List<FractalModule> allModules,
                              FractalxConfig fractalxConfig,
-                             List<SagaDefinition> sagaDefinitions,
                              SecurityProfile securityProfile) {
-        this(module, sourceRoot, serviceRoot, allModules, fractalxConfig, sagaDefinitions,
+        this(module, sourceRoot, serviceRoot, allModules, fractalxConfig,
                 securityProfile, null);
     }
 
-    /** Backward-compatible 6-arg constructor (for tests). Passes null for securityProfile. */
+    /** Backward-compatible constructor (for tests). Passes null for securityProfile. */
     public GenerationContext(FractalModule module,
                              Path sourceRoot,
                              Path serviceRoot,
                              List<FractalModule> allModules,
-                             FractalxConfig fractalxConfig,
-                             List<SagaDefinition> sagaDefinitions) {
-        this(module, sourceRoot, serviceRoot, allModules, fractalxConfig, sagaDefinitions, null);
+                             FractalxConfig fractalxConfig) {
+        this(module, sourceRoot, serviceRoot, allModules, fractalxConfig, null);
     }
 
     public FractalModule getModule()                   { return module; }
@@ -88,7 +81,6 @@ public final class GenerationContext {
     public Path getServiceRoot()                       { return serviceRoot; }
     public List<FractalModule> getAllModules()          { return allModules; }
     public FractalxConfig getFractalxConfig()          { return fractalxConfig; }
-    public List<SagaDefinition> getSagaDefinitions()   { return sagaDefinitions; }
     public SecurityProfile getSecurityProfile()        { return securityProfile; }
     public NameResolver getNameResolver()              { return nameResolver; }
     public DependencyGraph getDependencyGraph()         { return dependencyGraph; }

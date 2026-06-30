@@ -45,7 +45,7 @@ class NetScopeClientWiringStepSpec extends Specification {
 
     private GenerationContext ctx() {
         new GenerationContext(orderModule, serviceRoot, serviceRoot,
-                [orderModule, paymentModule], FractalxConfig.defaults(), [])
+                [orderModule, paymentModule], FractalxConfig.defaults())
     }
 
     // GenerationContext.getSrcMainJava() resolves to serviceRoot/src/main/java

@@ -28,12 +28,12 @@ class AuthenticationPrincipalRewriterStepSpec extends Specification {
             SecurityProfile.AuthType.BEARER_JWT, Set.of(SecurityProfile.AuthType.BEARER_JWT),
             true, null, null, "secret", null, null, [], [])
         new GenerationContext(module, serviceRoot, serviceRoot, [module],
-            FractalxConfig.defaults(), [], profile)
+            FractalxConfig.defaults(), profile)
     }
 
     private GenerationContext unsecuredContext() {
         new GenerationContext(module, serviceRoot, serviceRoot, [module],
-            FractalxConfig.defaults(), [])
+            FractalxConfig.defaults())
     }
 
     private Path writeJava(String pkg, String className, String content) {

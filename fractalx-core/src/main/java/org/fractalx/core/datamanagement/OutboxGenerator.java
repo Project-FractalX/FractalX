@@ -1,7 +1,6 @@
 package org.fractalx.core.datamanagement;
 
 import org.fractalx.core.model.FractalModule;
-import org.fractalx.core.model.SagaDefinition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,7 +32,7 @@ public class OutboxGenerator {
     private static final Logger log = LoggerFactory.getLogger(OutboxGenerator.class);
 
     public void generateOutbox(FractalModule module, Path serviceRoot,
-                               List<SagaDefinition> sagaDefinitions, String basePackage) throws IOException {
+                               String basePackage) throws IOException {
         String outboxPackage = basePackage + ".outbox";
 
         Path outboxPath = createPackagePath(serviceRoot.resolve("src/main/java"), outboxPackage);

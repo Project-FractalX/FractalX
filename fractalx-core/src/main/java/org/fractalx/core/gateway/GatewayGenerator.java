@@ -108,17 +108,11 @@ public class GatewayGenerator {
         // Step 8: Multi-mechanism security — mirrors monolith auth type and route rules
         new GatewaySecurityGenerator().generate(srcMainJava, modules, securityProfile);
 
-        // Step 9: Gateway-level circuit breakers + fallback controller
-        new GatewayCircuitBreakerGenerator().generate(srcMainJava, modules);
-
-        // Step 10: In-memory rate limiter
+        // Step 9: In-memory rate limiter
         new GatewayRateLimiterGenerator().generate(srcMainJava, modules);
 
-        // Step 11: Global CORS filter
+        // Step 10: Global CORS filter
         new GatewayCorsGenerator().generate(srcMainJava);
-
-        // Step 12: Request tracing + structured logging + metrics filter
-        new GatewayObservabilityGenerator().generate(srcMainJava, modules, fractalxConfig.springBootVersion());
 
         // Step 13: OpenAPI 3.0.3 spec + Postman Collection v2.1 (with inline tests)
         // Passing sourceRoot enables controller-scanning: the Postman collection and OpenAPI

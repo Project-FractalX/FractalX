@@ -122,7 +122,6 @@ class FullPipelineSpec extends Specification {
         buildMonolithFixture()
         new ServiceGenerator(srcMainJava(), outputRoot)
                 .withGateway(false)
-                .withAdmin(false)
                 .withDocker(false)
                 .generateServices([orderModule, paymentModule])
     }
@@ -186,28 +185,6 @@ class FullPipelineSpec extends Specification {
 
         then:
         Files.exists(outputRoot.resolve("payment-service/src/main/java/com/fixtures/payment/PaymentService.java"))
-    }
-
-    def "OtelConfig.java is generated in the correct package for order-service"() {
-        when:
-        runPipeline()
-
-        then:
-        def otel = outputRoot.resolve(
-            "order-service/src/main/java/com/fixtures/generated/orderservice/OtelConfig.java")
-        Files.exists(otel)
-        Files.readString(otel).contains("package com.fixtures.generated.orderservice")
-    }
-
-    def "OtelConfig.java is generated in the correct package for payment-service"() {
-        when:
-        runPipeline()
-
-        then:
-        def otel = outputRoot.resolve(
-            "payment-service/src/main/java/com/fixtures/generated/paymentservice/OtelConfig.java")
-        Files.exists(otel)
-        Files.readString(otel).contains("package com.fixtures.generated.paymentservice")
     }
 
     def "NetScope client interface is generated in payment-service for its OrderService dependency"() {

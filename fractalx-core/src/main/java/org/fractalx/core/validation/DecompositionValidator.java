@@ -10,7 +10,6 @@ import org.fractalx.core.validation.rules.DuplicateServiceNameRule;
 import org.fractalx.core.validation.rules.InfrastructurePortConflictRule;
 import org.fractalx.core.validation.rules.LombokConstructorRule;
 import org.fractalx.core.validation.rules.RepositoryBoundaryRule;
-import org.fractalx.core.validation.rules.SagaIntegrityRule;
 import org.fractalx.core.validation.rules.ServiceNameFormatRule;
 import org.fractalx.core.validation.rules.UnresolvedDependencyRule;
 import org.slf4j.Logger;
@@ -114,8 +113,7 @@ public class DecompositionValidator {
                 // Source-tree analysis — requires I/O
                 new LombokConstructorRule(),
                 new RepositoryBoundaryRule(),
-                new ControllerOwnershipConflictRule(),
-                new SagaIntegrityRule()
+                new ControllerOwnershipConflictRule()
         );
     }
 }

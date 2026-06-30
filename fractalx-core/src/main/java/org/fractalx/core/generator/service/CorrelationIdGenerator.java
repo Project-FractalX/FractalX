@@ -37,7 +37,6 @@ public class CorrelationIdGenerator implements ServiceFileGenerator {
 
     @Override
     public void generate(GenerationContext context) throws IOException {
-        if (!context.getFractalxConfig().features().observability()) return;
         FractalModule module = context.getModule();
         Path resourcesDir = context.getSrcMainResources();
         Files.createDirectories(resourcesDir);

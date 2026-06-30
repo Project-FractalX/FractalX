@@ -309,8 +309,6 @@ public class DecomposeMojo extends FractalxBaseMojo {
         labels.add("fractalx-registry");
         modules.forEach(m -> labels.add(m.getServiceName()));
         if (modules.size() > 1 && config.generateGateway()) labels.add("fractalx-gateway");
-        if (config.generateAdmin())  labels.add("fractalx-admin");
-        labels.add("fractalx-saga-orchestrator");
         labels.add(config.generateDocker() ? "docker-compose + scripts" : "start scripts");
 
         if (ansi) { out.print(ALT_ON); out.flush(); }
@@ -318,7 +316,6 @@ public class DecomposeMojo extends FractalxBaseMojo {
         Dashboard        dash   = new Dashboard(labels, out, ansi, "Decomposition Engine");
         ServiceGenerator gen    = new ServiceGenerator(srcPath, outputDirectory.toPath());
         gen.withGateway(config.generateGateway())
-           .withAdmin(config.generateAdmin())
            .withDocker(config.generateDocker());
         String[]         active = { null };
 
@@ -375,8 +372,6 @@ public class DecomposeMojo extends FractalxBaseMojo {
         section("Infrastructure");
         if (modules.size() > 1 && config.generateGateway())
             link(pw, "fractalx-gateway",  "http://localhost:" + GATEWAY_PORT);
-        if (config.generateAdmin())
-            link(pw, "fractalx-admin",    "http://localhost:" + ADMIN_PORT);
         link(pw, "fractalx-registry", "http://localhost:" + REGISTRY_PORT);
         out.println();
 

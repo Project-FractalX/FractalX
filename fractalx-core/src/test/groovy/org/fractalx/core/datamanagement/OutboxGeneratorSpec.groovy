@@ -46,7 +46,7 @@ class OutboxGeneratorSpec extends Specification {
 
     def "all four outbox files are generated"() {
         when:
-        generator.generateOutbox(module, serviceRoot, [], "org.fractalx.generated.orderservice")
+        generator.generateOutbox(module, serviceRoot, "org.fractalx.generated.orderservice")
 
         then:
         ["OutboxEvent.java", "OutboxRepository.java",
@@ -57,7 +57,7 @@ class OutboxGeneratorSpec extends Specification {
 
     def "OutboxEvent.java is annotated with @Entity and maps to fractalx_outbox table"() {
         when:
-        generator.generateOutbox(module, serviceRoot, [], "org.fractalx.generated.orderservice")
+        generator.generateOutbox(module, serviceRoot, "org.fractalx.generated.orderservice")
 
         then:
         def content = read("OutboxEvent.java")
@@ -67,7 +67,7 @@ class OutboxGeneratorSpec extends Specification {
 
     def "OutboxEvent.java declares all required fields"() {
         when:
-        generator.generateOutbox(module, serviceRoot, [], "org.fractalx.generated.orderservice")
+        generator.generateOutbox(module, serviceRoot, "org.fractalx.generated.orderservice")
 
         then:
         def content = read("OutboxEvent.java")
@@ -81,7 +81,7 @@ class OutboxGeneratorSpec extends Specification {
 
     def "OutboxRepository.java declares the findByPublishedFalseOrderByCreatedAtAsc method"() {
         when:
-        generator.generateOutbox(module, serviceRoot, [], "org.fractalx.generated.orderservice")
+        generator.generateOutbox(module, serviceRoot, "org.fractalx.generated.orderservice")
 
         then:
         def content = read("OutboxRepository.java")
@@ -91,7 +91,7 @@ class OutboxGeneratorSpec extends Specification {
 
     def "OutboxRepository.java has a method for querying failed events by retry count"() {
         when:
-        generator.generateOutbox(module, serviceRoot, [], "org.fractalx.generated.orderservice")
+        generator.generateOutbox(module, serviceRoot, "org.fractalx.generated.orderservice")
 
         then:
         read("OutboxRepository.java").contains("findByPublishedFalseAndRetryCountGreaterThan")
@@ -99,7 +99,7 @@ class OutboxGeneratorSpec extends Specification {
 
     def "OutboxPublisher.java is a @Component with a publish method"() {
         when:
-        generator.generateOutbox(module, serviceRoot, [], "org.fractalx.generated.orderservice")
+        generator.generateOutbox(module, serviceRoot, "org.fractalx.generated.orderservice")
 
         then:
         def content = read("OutboxPublisher.java")
@@ -109,7 +109,7 @@ class OutboxGeneratorSpec extends Specification {
 
     def "OutboxPoller.java is a @Component with @Scheduled polling"() {
         when:
-        generator.generateOutbox(module, serviceRoot, [], "org.fractalx.generated.orderservice")
+        generator.generateOutbox(module, serviceRoot, "org.fractalx.generated.orderservice")
 
         then:
         def content = read("OutboxPoller.java")
@@ -120,7 +120,7 @@ class OutboxGeneratorSpec extends Specification {
 
     def "OutboxPoller.java defines MAX_RETRIES constant"() {
         when:
-        generator.generateOutbox(module, serviceRoot, [], "org.fractalx.generated.orderservice")
+        generator.generateOutbox(module, serviceRoot, "org.fractalx.generated.orderservice")
 
         then:
         read("OutboxPoller.java").contains("MAX_RETRIES")
@@ -128,7 +128,7 @@ class OutboxGeneratorSpec extends Specification {
 
     def "OutboxPoller.java includes the originating service name in its documentation"() {
         when:
-        generator.generateOutbox(module, serviceRoot, [], "org.fractalx.generated.orderservice")
+        generator.generateOutbox(module, serviceRoot, "org.fractalx.generated.orderservice")
 
         then: "the service name appears in the generated Javadoc"
         read("OutboxPoller.java").contains("order-service")
@@ -136,7 +136,7 @@ class OutboxGeneratorSpec extends Specification {
 
     def "generated files live under the correct package namespace"() {
         when:
-        generator.generateOutbox(module, serviceRoot, [], "org.fractalx.generated.orderservice")
+        generator.generateOutbox(module, serviceRoot, "org.fractalx.generated.orderservice")
 
         then:
         def content = read("OutboxEvent.java")

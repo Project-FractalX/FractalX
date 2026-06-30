@@ -42,7 +42,7 @@ class GraphIntegrationSpec extends Specification {
         when:
         def ctx = new GenerationContext(
                 module, sourceRoot, serviceRoot, [module], config,
-                [], null, null, graph)
+                 null, null, graph)
 
         then:
         ctx.dependencyGraph != null
@@ -63,7 +63,7 @@ class GraphIntegrationSpec extends Specification {
 
         when:
         def ctx = new GenerationContext(
-                module, sourceRoot, serviceRoot, [module], config, [])
+                module, sourceRoot, serviceRoot, [module], config)
 
         then:
         ctx.dependencyGraph == null
