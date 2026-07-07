@@ -147,7 +147,8 @@ public class NetScopeClientGenerator implements ServiceFileGenerator {
                     .findFirst()
                     .ifPresent(classDecl ->
                             classDecl.getMethods().forEach(method -> {
-                                if (method.isPublic() && !method.isStatic()) {
+                                if ((method.isPublic() || (classDecl.isInterface() && !method.isPrivate()))
+                                        && !method.isStatic()) {
                                     List<String> params = method.getParameters().stream()
                                             // Use getTypeAsString() to preserve generic type parameters
                                             // e.g., List<Product> instead of raw List
